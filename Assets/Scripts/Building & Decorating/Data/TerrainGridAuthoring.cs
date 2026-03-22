@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -68,6 +69,11 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
     [SerializeField] private List<bool> enabledCells = new List<bool>();
 
     [SerializeField] private bool drawGridGizmos = true;
+    // When true the gizmo draw loop iterates full tiles (1x1) instead of subtiles
+    // (0.5x0.5), cutting draw calls by SubtilesPerFullTile² — useful for large grids.
+    [SerializeField] private bool gizmoPerformanceMode = false;
+
+    public bool GizmoPerformanceMode => gizmoPerformanceMode;
 
     // ── Terraform data ───────────────────────────────────────────────────────────
 
@@ -79,6 +85,29 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
 
     // Per-full-tile shape. Parallel array to tileHeights.
     [SerializeField] private TileShape[] tileShapes = new TileShape[0];
+
+    // ── Multi-terrain chunk system ───────────────────────────────────────────────
+
+    /// <summary>
+    /// One rectangular chunk of Unity Terrain that covers a sub-region of the unified tile grid.
+    /// </summary>
+    [Serializable]
+    public class TerrainSection
+    {
+        public Terrain terrain;
+        [HideInInspector] public Vector2Int tileOffset; // (tx, tz) of the chunk's bottom-left full tile
+        [HideInInspector] public Vector2Int tileCount;  // width × depth in full tiles
+    }
+
+    [SerializeField] private List<TerrainSection> terrainSections = new List<TerrainSection>();
+
+    /// <summary>Read-only access to the terrain chunk list.</summary>
+    public IReadOnlyList<TerrainSection> TerrainSections => terrainSections;
+
+    // Per-full-tile flag: true = covered by a TerrainSection, false = void.
+    // Rebuilt by RebuildCoverageAndVoids(). Parallel to tileHeights/tileShapes.
+    [HideInInspector]
+    [SerializeField] private bool[] tileIsCovered = new bool[0];
 
     // ── ISupportSurface ──────────────────────────────────────────────────────────
 
@@ -354,8 +383,16 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
 
     private void Reset()
     {
-        RecalculateFromColliders();
-        EnsureValidData();
+        // If child Terrains already exist (e.g. pasted from a prefab), derive the
+        // grid from section positions rather than the combined bounding box.
+        Terrain[] childTerrains = GetComponentsInChildren<Terrain>();
+        if (childTerrains.Length > 0)
+            AutoDetectSections();
+        else
+        {
+            RecalculateFromColliders();
+            EnsureValidData();
+        }
     }
 
     private void OnValidate()
@@ -370,6 +407,10 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
         gridSizeInCells.y = Mathf.Max(1, gridSizeInCells.y);
         ResizeEnabledCells();
         ResizeTileData();
+        // When sections are defined, always re-apply coverage so that void tiles
+        // cannot be accidentally re-enabled by resizes or Inspector changes.
+        if (terrainSections != null && terrainSections.Count > 0)
+            RebuildCoverageAndVoids();
     }
 
     /// <summary>
@@ -391,6 +432,9 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
         ResizeEnabledCells();
         ResizeTileData();
         FillAll(true);
+        // Re-apply section coverage so void tiles are disabled even after a recalculate.
+        if (terrainSections != null && terrainSections.Count > 0)
+            RebuildCoverageAndVoids();
     }
 
     public void FillAll(bool value)
@@ -532,9 +576,11 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
             for (int tx = 0; tx < fullSize.x; tx++)
             {
                 bool flat = GetTileShape(tx, tz) == TileShape.Flat;
+                bool covered = IsTileCovered(tx, tz);
+                bool enabled = flat && covered;
                 for (int sz = 0; sz < s; sz++)
                     for (int sx = 0; sx < s; sx++)
-                        SetCell(tx * s + sx, tz * s + sz, flat);
+                        SetCell(tx * s + sx, tz * s + sz, enabled);
             }
         }
     }
@@ -687,6 +733,329 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
         td.SetHeights(0, 0, heights);
     }
 
+    /// <summary>
+    /// Like ApplyToTerrains but only bakes terrain sections whose tile range overlaps
+    /// dirtyTiles (automatically expanded by 1 tile for seam safety). Reads and writes
+    /// only the minimal heightmap sub-patch — far faster than a full resolution bake.
+    /// Use this for all runtime edits; keep ApplyToTerrains for initial full rebuilds.
+    /// </summary>
+    public void ApplyToTerrainsRect(RectInt dirtyTiles)
+    {
+        if (terrainSections.Count == 0) return;
+
+        // Expand by 1 tile so heightmap samples on seams of adjacent sections also refresh.
+        int minTx = dirtyTiles.xMin - 1;
+        int minTz = dirtyTiles.yMin - 1;
+        int maxTx = dirtyTiles.xMax;   // RectInt.xMax = xMin+width (exclusive), -1 inclusive +1 expand = net same
+        int maxTz = dirtyTiles.yMax;
+
+        Vector2Int fullSize = FullTileGridSize;
+
+        foreach (var section in terrainSections)
+        {
+            if (section == null || section.terrain == null) continue;
+            TerrainData td = section.terrain.terrainData;
+            if (td == null) continue;
+
+            // Skip sections entirely outside the dirty rect.
+            int secMaxX = section.tileOffset.x + section.tileCount.x;
+            int secMaxZ = section.tileOffset.y + section.tileCount.y;
+            if (minTx >= secMaxX || maxTx < section.tileOffset.x ||
+                minTz >= secMaxZ || maxTz < section.tileOffset.y)
+                continue;
+
+            int res = td.heightmapResolution;
+            float terrainHeight = td.size.y;
+            float normalPerLevel = (terrainHeight > 0f) ? LevelHeight / terrainHeight : 0f;
+
+            float samplesPerTileX = (res - 1f) / Mathf.Max(1, section.tileCount.x);
+            float samplesPerTileZ = (res - 1f) / Mathf.Max(1, section.tileCount.y);
+
+            // Convert dirty global tile range to a heightmap sample range within this section.
+            float localMinX = minTx - section.tileOffset.x;
+            float localMinZ = minTz - section.tileOffset.y;
+            float localMaxX = maxTx - section.tileOffset.x + 1; // +1: tile N spans samples up to (N+1)*spt
+            float localMaxZ = maxTz - section.tileOffset.y + 1;
+
+            int hxStart = Mathf.Clamp(Mathf.FloorToInt(localMinX * samplesPerTileX), 0, res - 1);
+            int hzStart = Mathf.Clamp(Mathf.FloorToInt(localMinZ * samplesPerTileZ), 0, res - 1);
+            int hxEnd   = Mathf.Clamp(Mathf.CeilToInt (localMaxX * samplesPerTileX), 0, res);
+            int hzEnd   = Mathf.Clamp(Mathf.CeilToInt (localMaxZ * samplesPerTileZ), 0, res);
+
+            int patchW = hxEnd - hxStart;
+            int patchH = hzEnd - hzStart;
+            if (patchW <= 0 || patchH <= 0) continue;
+
+            // Read only the sub-patch, recompute, write back.
+            float[,] heights = td.GetHeights(hxStart, hzStart, patchW, patchH);
+
+            for (int pi = 0; pi < patchH; pi++)
+            {
+                for (int pj = 0; pj < patchW; pj++)
+                {
+                    int hz = hzStart + pi;
+                    int hx = hxStart + pj;
+
+                    float localTileX = hx / samplesPerTileX;
+                    float localTileZ = hz / samplesPerTileZ;
+
+                    float globalTileX = section.tileOffset.x + localTileX;
+                    float globalTileZ = section.tileOffset.y + localTileZ;
+
+                    int tx = Mathf.Clamp(Mathf.FloorToInt(globalTileX), 0, fullSize.x - 1);
+                    int tz = Mathf.Clamp(Mathf.FloorToInt(globalTileZ), 0, fullSize.y - 1);
+
+                    float fx = globalTileX - tx;
+                    float fz = globalTileZ - tz;
+
+                    float h = ComputeTileHeight(tx, tz, fx, fz) * normalPerLevel;
+                    heights[pi, pj] = Mathf.Clamp01(h);
+                }
+            }
+
+            td.SetHeights(hxStart, hzStart, heights);
+        }
+    }
+
+    // ── Multi-terrain chunk methods ──────────────────────────────────────────────
+
+    /// <summary>Returns true if the tile at (tx, tz) is covered by any TerrainSection.</summary>
+    public bool IsTileCovered(int tx, int tz)
+    {
+        if (terrainSections.Count == 0) return true; // legacy single-terrain: all covered
+        int idx = GetFullTileIndex(tx, tz);
+        if (idx < 0 || idx >= tileIsCovered.Length) return false;
+        return tileIsCovered[idx];
+    }
+
+    /// <summary>
+    /// Rebuilds the tileIsCovered array from terrainSections, then calls SyncEnabledCellsFromShapes
+    /// to disable void tiles. Call after AutoDetectSections or any manual section change.
+    /// </summary>
+    public void RebuildCoverageAndVoids()
+    {
+        Vector2Int fullSize = FullTileGridSize;
+        int required = fullSize.x * fullSize.y;
+        if (tileIsCovered.Length != required)
+            tileIsCovered = new bool[required];
+
+        // Clear all
+        for (int i = 0; i < tileIsCovered.Length; i++)
+            tileIsCovered[i] = false;
+
+        // Mark tiles covered by each section
+        foreach (var section in terrainSections)
+        {
+            if (section == null || section.terrain == null) continue;
+            for (int lz = 0; lz < section.tileCount.y; lz++)
+            {
+                for (int lx = 0; lx < section.tileCount.x; lx++)
+                {
+                    int tx = section.tileOffset.x + lx;
+                    int tz = section.tileOffset.y + lz;
+                    int idx = GetFullTileIndex(tx, tz);
+                    if (idx >= 0 && idx < tileIsCovered.Length)
+                        tileIsCovered[idx] = true;
+                }
+            }
+        }
+
+        SyncEnabledCellsFromShapes();
+    }
+
+    /// <summary>
+    /// Returns the normalised height (in terrain 0..1 space) for a point at
+    /// tile (tx, tz) with fractional position (fx, fz) within that tile.
+    /// fx/fz range 0..1: 0 = west/south edge, 1 = east/north edge.
+    /// Multiply by normalPerLevel to get the final heightmap value.
+    /// </summary>
+    public float ComputeTileHeight(int tx, int tz, float fx, float fz)
+    {
+        int level = GetTileHeight(tx, tz);
+        TileShape shape = GetTileShape(tx, tz);
+
+        switch (shape)
+        {
+            case TileShape.SlopeNorth:     return level + fz;
+            case TileShape.SlopeSouth:     return level + 1f - fz;
+            case TileShape.SlopeEast:      return level + fx;
+            case TileShape.SlopeWest:      return level + 1f - fx;
+            case TileShape.SlopeNorthEast: return level + fx + fz - fx * fz;
+            case TileShape.SlopeNorthWest: return level + 1f - fx * (1f - fz);
+            case TileShape.SlopeSouthEast: return level + 1f - fz * (1f - fx);
+            case TileShape.SlopeSouthWest: return level + 1f - fx * fz;
+            case TileShape.SlopeNS:        return level + Mathf.Max(fz, 1f - fz);
+            case TileShape.SlopeEW:        return level + Mathf.Max(fx, 1f - fx);
+            case TileShape.SlopeNSE:       return level + Mathf.Max(fz, Mathf.Max(1f - fz, fx));
+            case TileShape.SlopeNSW:       return level + Mathf.Max(fz, Mathf.Max(1f - fz, 1f - fx));
+            case TileShape.SlopeNEW:       return level + Mathf.Max(fz, Mathf.Max(fx, 1f - fx));
+            case TileShape.SlopeSEW:       return level + Mathf.Max(1f - fz, Mathf.Max(fx, 1f - fx));
+            case TileShape.SlopePyramid:   return level + Mathf.Max(Mathf.Abs(2f * fx - 1f), Mathf.Abs(2f * fz - 1f));
+            case TileShape.PyramidUp:      return level + 1f - Mathf.Max(Mathf.Abs(2f * fx - 1f), Mathf.Abs(2f * fz - 1f));
+            case TileShape.CornerNE:       return level + fx * fz;
+            case TileShape.CornerNW:       return level + (1f - fx) * fz;
+            case TileShape.CornerSE:       return level + fx * (1f - fz);
+            case TileShape.CornerSW:       return level + (1f - fx) * (1f - fz);
+            default:                       return level;
+        }
+    }
+
+    /// <summary>
+    /// Bakes tileHeights and tileShapes into all child Unity Terrains defined by terrainSections.
+    /// Each section writes to its own TerrainData heightmap. After writing, calls SetNeighborConnections.
+    /// Falls back to the single-terrain ApplyToTerrain path if no sections are defined.
+    /// </summary>
+    public void ApplyToTerrains()
+    {
+        if (terrainSections.Count == 0) return;
+
+        Vector2Int fullSize = FullTileGridSize;
+
+        foreach (var section in terrainSections)
+        {
+            if (section == null || section.terrain == null) continue;
+            TerrainData td = section.terrain.terrainData;
+            if (td == null) continue;
+
+            int res = td.heightmapResolution;
+            float terrainHeight = td.size.y;
+            float normalPerLevel = (terrainHeight > 0f) ? LevelHeight / terrainHeight : 0f;
+
+            // How many heightmap samples per full tile for this chunk.
+            float samplesPerTileX = (res - 1f) / Mathf.Max(1, section.tileCount.x);
+            float samplesPerTileZ = (res - 1f) / Mathf.Max(1, section.tileCount.y);
+
+            float[,] heights = td.GetHeights(0, 0, res, res);
+
+            for (int hz = 0; hz < res; hz++)
+            {
+                for (int hx = 0; hx < res; hx++)
+                {
+                    // Local tile position within this chunk
+                    float localTileX = hx / samplesPerTileX;
+                    float localTileZ = hz / samplesPerTileZ;
+
+                    // Global tile coordinates
+                    float globalTileX = section.tileOffset.x + localTileX;
+                    float globalTileZ = section.tileOffset.y + localTileZ;
+
+                    int tx = Mathf.Clamp(Mathf.FloorToInt(globalTileX), 0, fullSize.x - 1);
+                    int tz = Mathf.Clamp(Mathf.FloorToInt(globalTileZ), 0, fullSize.y - 1);
+
+                    float fx = globalTileX - tx;
+                    float fz = globalTileZ - tz;
+
+                    float h = ComputeTileHeight(tx, tz, fx, fz) * normalPerLevel;
+                    heights[hz, hx] = Mathf.Clamp01(h);
+                }
+            }
+
+            td.SetHeights(0, 0, heights);
+        }
+
+        // Note: SetNeighborConnections is NOT called here — neighbors are fixed at
+        // setup time (AutoDetectSections) and never change during gameplay.
+    }
+
+    /// <summary>
+    /// Finds left/right/top/bottom neighbours among terrainSections and calls
+    /// Terrain.SetNeighbors for seamless LOD stitching between adjacent chunks.
+    /// </summary>
+    private void SetNeighborConnections()
+    {
+        foreach (var section in terrainSections)
+        {
+            if (section == null || section.terrain == null) continue;
+
+            Terrain left = null, top = null, right = null, bottom = null;
+
+            foreach (var other in terrainSections)
+            {
+                if (other == section || other == null || other.terrain == null) continue;
+                if (other.tileOffset.y != section.tileOffset.y) goto checkNS;
+                // Same row: check left/right
+                if (other.tileOffset.x + other.tileCount.x == section.tileOffset.x)
+                    left = other.terrain;
+                else if (section.tileOffset.x + section.tileCount.x == other.tileOffset.x)
+                    right = other.terrain;
+                checkNS:
+                if (other.tileOffset.x != section.tileOffset.x) continue;
+                // Same column: check top/bottom
+                if (other.tileOffset.y + other.tileCount.y == section.tileOffset.y)
+                    bottom = other.terrain;
+                else if (section.tileOffset.y + section.tileCount.y == other.tileOffset.y)
+                    top = other.terrain;
+            }
+
+            section.terrain.SetNeighbors(left, top, right, bottom);
+        }
+    }
+
+    /// <summary>
+    /// Scans all child Terrain components and rebuilds the terrainSections list.
+    /// Computes each chunk's tileOffset from its world position relative to this transform,
+    /// and tileCount from its TerrainData size. Expands gridSizeInCells to encompass all chunks.
+    /// </summary>
+    public void AutoDetectSections()
+    {
+        terrainSections.Clear();
+
+        Terrain[] childTerrains = GetComponentsInChildren<Terrain>();
+        if (childTerrains.Length == 0) return;
+
+        // Determine the unified bounding box in full tiles.
+        int minTX = int.MaxValue, minTZ = int.MaxValue;
+        int maxTX = int.MinValue, maxTZ = int.MinValue;
+
+        var pending = new List<(Terrain terrain, Vector2Int offset, Vector2Int count)>();
+
+        foreach (var t in childTerrains)
+        {
+            if (t.terrainData == null) continue;
+            Vector3 delta = t.transform.position - transform.position;
+            int offX = Mathf.RoundToInt(delta.x / FullTileWorldSize);
+            int offZ = Mathf.RoundToInt(delta.z / FullTileWorldSize);
+            int countX = Mathf.RoundToInt(t.terrainData.size.x / FullTileWorldSize);
+            int countZ = Mathf.RoundToInt(t.terrainData.size.z / FullTileWorldSize);
+
+            if (countX <= 0 || countZ <= 0) continue;
+
+            pending.Add((t, new Vector2Int(offX, offZ), new Vector2Int(countX, countZ)));
+
+            if (offX < minTX) minTX = offX;
+            if (offZ < minTZ) minTZ = offZ;
+            if (offX + countX > maxTX) maxTX = offX + countX;
+            if (offZ + countZ > maxTZ) maxTZ = offZ + countZ;
+        }
+
+        if (pending.Count == 0) return;
+
+        // Shift offsets so the minimum is (0,0).
+        foreach (var (terrain, offset, count) in pending)
+        {
+            var section = new TerrainSection
+            {
+                terrain   = terrain,
+                tileOffset = new Vector2Int(offset.x - minTX, offset.y - minTZ),
+                tileCount  = count
+            };
+            terrainSections.Add(section);
+        }
+
+        // Expand grid to cover all sections.
+        int totalTilesX = maxTX - minTX;
+        int totalTilesZ = maxTZ - minTZ;
+        int s = SubtilesPerFullTile;
+        gridSizeInCells = new Vector2Int(totalTilesX * s, totalTilesZ * s);
+
+        // Update gridOriginLocalOffset to match the bottom-left chunk's position.
+        Vector3 originDelta = new Vector3(minTX * FullTileWorldSize, 0f, minTZ * FullTileWorldSize);
+        gridOriginLocalOffset = new Vector3(originDelta.x, gridOriginLocalOffset.y, originDelta.z);
+
+        EnsureValidData();
+        RebuildCoverageAndVoids();
+    }
+
     // ── Terraform internal ───────────────────────────────────────────────────────
 
     private int GetFullTileIndex(int tx, int tz)
@@ -715,6 +1084,14 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
             for (int i = 0; i < Mathf.Min(tileShapes.Length, required); i++)
                 newShapes[i] = tileShapes[i];
             tileShapes = newShapes;
+        }
+
+        if (tileIsCovered.Length != required)
+        {
+            bool[] newCovered = new bool[required];
+            for (int i = 0; i < Mathf.Min(tileIsCovered.Length, required); i++)
+                newCovered[i] = tileIsCovered[i];
+            tileIsCovered = newCovered;
         }
     }
 
@@ -883,11 +1260,61 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
             return;
         }
 
-        DrawSubtileCellGizmos();
-        DrawWalkableFullTileOverlays();
+        // Pre-compute frustum planes once for the current Scene View camera.
+        // All three loops use this to skip tiles outside the view.
+        Plane[] frustum = (Camera.current != null)
+            ? GeometryUtility.CalculateFrustumPlanes(Camera.current)
+            : null;
+
+        if (gizmoPerformanceMode)
+            DrawFullTileCellGizmos(frustum);
+        else
+            DrawSubtileCellGizmos(frustum);
+
+        DrawWalkableFullTileOverlays(frustum);
     }
 
-    private void DrawSubtileCellGizmos()
+    /// <summary>Performance-mode: one cube per full tile instead of per subtile.</summary>
+    private void DrawFullTileCellGizmos(Plane[] frustum)
+    {
+        Vector2Int fullSize = FullTileGridSize;
+        for (int tz = 0; tz < fullSize.y; tz++)
+        {
+            for (int tx = 0; tx < fullSize.x; tx++)
+            {
+                if (!IsTileCovered(tx, tz)) continue;
+
+                float localX = gridOriginLocalOffset.x + (tx + 0.5f) * FullTileWorldSize;
+                float localZ = gridOriginLocalOffset.z + (tz + 0.5f) * FullTileWorldSize;
+                float hY = (GetTileShape(tx, tz) == TileShape.Flat)
+                    ? GetTileHeight(tx, tz) * LevelHeight : 0f;
+                Vector3 worldCenter = transform.position
+                    + transform.right   * localX
+                    + transform.up      * (gridOriginLocalOffset.y + hY)
+                    + transform.forward * localZ;
+
+                if (frustum != null && !GeometryUtility.TestPlanesAABB(frustum,
+                        new Bounds(worldCenter, new Vector3(FullTileWorldSize, GizmoThickness, FullTileWorldSize))))
+                    continue;
+
+                Vector3 worldSize = new Vector3(FullTileWorldSize, GizmoThickness, FullTileWorldSize);
+                Matrix4x4 prevMatrix = Gizmos.matrix;
+                Gizmos.matrix = Matrix4x4.TRS(worldCenter, transform.rotation, Vector3.one);
+
+                bool walkable = IsFullTileWalkable(tx, tz);
+                Color fill = ((tx + tz) & 1) == 0 ? FemalePrimaryLight : FemaleSecondaryLight;
+                if (!walkable) fill = DisabledCellOutlineColor;
+                Gizmos.color = fill;
+                Gizmos.DrawCube(Vector3.zero, worldSize);
+                Gizmos.color = Color.Lerp(fill, Color.black, 0.3f);
+                Gizmos.DrawWireCube(Vector3.zero, worldSize);
+
+                Gizmos.matrix = prevMatrix;
+            }
+        }
+    }
+
+    private void DrawSubtileCellGizmos(Plane[] frustum)
     {
         int _s = SubtilesPerFullTile;
         for (int z = 0; z < gridSizeInCells.y; z++)
@@ -903,8 +1330,15 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
                     + transform.right * localX
                     + transform.up * (gridOriginLocalOffset.y + _hY)
                     + transform.forward * localZ;
-                Vector3 worldSize = new Vector3(femaleTileSize, GizmoThickness, femaleTileSize);
 
+                // Skip void tiles entirely — they are not covered by any section.
+                if (!IsTileCovered(_ftx, _ftz)) continue;
+
+                if (frustum != null && !GeometryUtility.TestPlanesAABB(frustum,
+                        new Bounds(worldCenter, new Vector3(femaleTileSize, GizmoThickness, femaleTileSize))))
+                    continue;
+
+                Vector3 worldSize = new Vector3(femaleTileSize, GizmoThickness, femaleTileSize);
                 Matrix4x4 prevMatrix = Gizmos.matrix;
                 Gizmos.matrix = Matrix4x4.TRS(worldCenter, transform.rotation, Vector3.one);
 
@@ -927,7 +1361,7 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
         }
     }
 
-    private void DrawWalkableFullTileOverlays()
+    private void DrawWalkableFullTileOverlays(Plane[] frustum)
     {
         Vector2Int fullSize = FullTileGridSize;
 
@@ -947,6 +1381,11 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
                     + transform.right * localX
                     + transform.up * (gridOriginLocalOffset.y + _hY + FullTileGizmoThickness * 0.5f)
                     + transform.forward * localZ;
+
+                if (frustum != null && !GeometryUtility.TestPlanesAABB(frustum,
+                        new Bounds(worldCenter, new Vector3(FullTileWorldSize, FullTileGizmoThickness, FullTileWorldSize))))
+                    continue;
+
                 Vector3 worldSize = new Vector3(FullTileWorldSize, FullTileGizmoThickness, FullTileWorldSize);
 
                 Matrix4x4 prevMatrix = Gizmos.matrix;

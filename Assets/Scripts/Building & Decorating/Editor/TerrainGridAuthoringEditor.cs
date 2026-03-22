@@ -12,12 +12,14 @@ public class TerrainGridAuthoringEditor : Editor
     private SerializedProperty femaleTileSizeProperty;
     private SerializedProperty gridSizeInCellsProperty;
     private SerializedProperty drawGridGizmosProperty;
+    private SerializedProperty gizmoPerformanceModeProperty;
 
     private void OnEnable()
     {
-        femaleTileSizeProperty = serializedObject.FindProperty("femaleTileSize");
-        gridSizeInCellsProperty = serializedObject.FindProperty("gridSizeInCells");
-        drawGridGizmosProperty = serializedObject.FindProperty("drawGridGizmos");
+        femaleTileSizeProperty        = serializedObject.FindProperty("femaleTileSize");
+        gridSizeInCellsProperty       = serializedObject.FindProperty("gridSizeInCells");
+        drawGridGizmosProperty        = serializedObject.FindProperty("drawGridGizmos");
+        gizmoPerformanceModeProperty  = serializedObject.FindProperty("gizmoPerformanceMode");
     }
 
     public override void OnInspectorGUI()
@@ -29,6 +31,11 @@ public class TerrainGridAuthoringEditor : Editor
         EditorGUILayout.LabelField("Grid Settings", EditorStyles.boldLabel);
         EditorGUILayout.PropertyField(femaleTileSizeProperty, new GUIContent("Female Tile Size", "Width and depth of one subtile cell in world units. Must match all furniture prefabs (default 0.5)."));
         EditorGUILayout.PropertyField(drawGridGizmosProperty, new GUIContent("Draw Grid Gizmos"));
+        using (new EditorGUI.DisabledScope(!drawGridGizmosProperty.boolValue))
+        {
+            EditorGUILayout.PropertyField(gizmoPerformanceModeProperty,
+                new GUIContent("  Performance Mode", "Draw one cube per full tile instead of per subtile — much faster on large grids."));
+        }
 
         using (new EditorGUI.DisabledScope(true))
         {
@@ -65,6 +72,13 @@ public class TerrainGridAuthoringEditor : Editor
             Undo.RecordObject(authoring, "Recalculate Terrain Grid");
             authoring.RecalculateFromColliders();
             authoring.EnsureValidData();
+            EditorUtility.SetDirty(authoring);
+        }
+
+        if (GUILayout.Button("Auto-Detect Terrain Sections"))
+        {
+            Undo.RecordObject(authoring, "Auto-Detect Terrain Sections");
+            authoring.AutoDetectSections();
             EditorUtility.SetDirty(authoring);
         }
 

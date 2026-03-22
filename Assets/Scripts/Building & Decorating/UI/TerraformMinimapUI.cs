@@ -45,7 +45,6 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
 
     // ── State ─────────────────────────────────────────────────────────────────────
     private TerrainGridAuthoring terrain;
-    private Terrain               unityTerrain;
     private TerrainEditController controller;
     private IReadOnlyList<PlacedFurnitureRecord> placedFurniture;
     private PlayerMotor playerMotor;
@@ -64,6 +63,9 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
     private Tool activeTool = Tool.Raise;
 
     private bool isPainting;
+    // Tiles already raised/dug in the current drag stroke — each tile is only
+    // affected once per stroke so holding down doesn't continuously stack levels.
+    private readonly HashSet<Vector2Int> paintedThisStroke = new HashSet<Vector2Int>();
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -117,7 +119,6 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
                            PlayerMotor motor = null)
     {
         terrain       = terrainGrid;
-        unityTerrain  = unity;
         controller    = ctrl;
         placedFurniture = furniture;
         playerMotor   = motor;
@@ -421,12 +422,14 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
     public void OnPointerDown(PointerEventData eventData)
     {
         isPainting = true;
+        paintedThisStroke.Clear();
         PaintAt(eventData.position);
     }
 
     public void OnPointerUp(PointerEventData eventData)
     {
         isPainting = false;
+        paintedThisStroke.Clear();
     }
 
     public void OnDrag(PointerEventData eventData)
@@ -442,10 +445,13 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
         switch (activeTool)
         {
             case Tool.Raise:
-                controller.RaiseTile(tile.x, tile.y);
-                break;
             case Tool.Dig:
-                controller.LowerTile(tile.x, tile.y);
+                // Each tile is only raised/lowered once per drag stroke.
+                if (!paintedThisStroke.Add(tile)) return;
+                if (activeTool == Tool.Raise)
+                    controller.RaiseTile(tile.x, tile.y);
+                else
+                    controller.LowerTile(tile.x, tile.y);
                 break;
             case Tool.Slope:
                 controller.TryPaintSlope(tile.x, tile.y);

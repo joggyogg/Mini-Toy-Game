@@ -15,24 +15,29 @@ using UnityEditor;
 public class TerrainEditController : MonoBehaviour
 {
     [SerializeField] private TerrainGridAuthoring terrainGrid;
-    [SerializeField] private Terrain              unityTerrain;
     [SerializeField] private TerraformMinimapUI   minimapUI;
     [SerializeField] private PlayerMotor          playerMotor;
     // Optional: if DecorateMinimapUI is also open it will stay in sync with terrain edits.
     [SerializeField] private DecorateMinimapUI    decorateMinimap;
 
-    // Snapshot of the original heightmap taken at Awake so we can restore it
+    // Snapshot of the original heightmaps taken at Awake so we can restore them
     // when play mode ends. TerrainData.SetHeights() modifies the asset on disk
     // directly; without this the changes would be permanent after stopping play.
-    private float[,] originalHeights;
+    private Dictionary<Terrain, float[,]> originalHeightsMap = new Dictionary<Terrain, float[,]>();
+
+    private bool HasSections => terrainGrid != null && terrainGrid.TerrainSections.Count > 0;
 
     private void Awake()
     {
-        if (unityTerrain != null && unityTerrain.terrainData != null)
+        if (HasSections)
         {
-            TerrainData td = unityTerrain.terrainData;
-            int res = td.heightmapResolution;
-            originalHeights = td.GetHeights(0, 0, res, res);
+            foreach (var section in terrainGrid.TerrainSections)
+            {
+                if (section == null || section.terrain == null || section.terrain.terrainData == null) continue;
+                TerrainData td = section.terrain.terrainData;
+                int res = td.heightmapResolution;
+                originalHeightsMap[section.terrain] = td.GetHeights(0, 0, res, res);
+            }
         }
 
 #if UNITY_EDITOR
@@ -61,10 +66,13 @@ public class TerrainEditController : MonoBehaviour
 
     private void RestoreOriginalHeights()
     {
-        if (originalHeights == null) return;
-        if (unityTerrain != null && unityTerrain.terrainData != null)
-            unityTerrain.terrainData.SetHeights(0, 0, originalHeights);
-        originalHeights = null; // prevent double-restore from both hook and OnDestroy
+        if (originalHeightsMap.Count == 0) return;
+        foreach (var kvp in originalHeightsMap)
+        {
+            if (kvp.Key != null && kvp.Key.terrainData != null)
+                kvp.Key.terrainData.SetHeights(0, 0, kvp.Value);
+        }
+        originalHeightsMap.Clear(); // prevent double-restore from both hook and OnDestroy
     }
 
     // ── Public API ────────────────────────────────────────────────────────────────
@@ -73,7 +81,7 @@ public class TerrainEditController : MonoBehaviour
     {
         if (minimapUI == null) return;
         minimapUI.gameObject.SetActive(true);
-        minimapUI.Initialise(terrainGrid, unityTerrain, this, motor: playerMotor);
+        minimapUI.Initialise(terrainGrid, null, this, motor: playerMotor);
     }
 
     public void ExitTerraformMode()
@@ -97,8 +105,8 @@ public class TerrainEditController : MonoBehaviour
         {
             terrainGrid.SetTileHeight(tx, tz, current + 1);
         }
-        CascadeSlopeRefresh(tx, tz);
-        ApplyAndRefresh();
+        var dirty = CascadeSlopeRefresh(tx, tz);
+        ApplyAndRefresh(dirty);
     }
 
     /// <summary>Lower the full tile at (tx,tz) by one level, minimum 0.
@@ -116,17 +124,23 @@ public class TerrainEditController : MonoBehaviour
         {
             terrainGrid.SetTileHeight(tx, tz, Mathf.Max(0, current - 1));
         }
-        CascadeSlopeRefresh(tx, tz);
-        ApplyAndRefresh();
+        var dirty = CascadeSlopeRefresh(tx, tz);
+        ApplyAndRefresh(dirty);
     }
 
     /// <summary>
     /// BFS cascade: re-evaluates the changed tile (if non-flat) plus all neighbour slope tiles.
     /// Spreads outward only when a tile actually changes shape or height, so it stops
     /// as soon as the grid has stabilised — no unnecessary work beyond the affected region.
+    /// Returns the bounding RectInt of all tiles that were dirtied (origin ± neighbours).
     /// </summary>
-    private void CascadeSlopeRefresh(int originX, int originZ)
+    private RectInt CascadeSlopeRefresh(int originX, int originZ)
     {
+        // Start dirty bounds at origin ± 1 — the origin height/shape changed and its
+        // immediate neighbours are directly affected even if cascade doesn't spread further.
+        int minTx = originX - 1, minTz = originZ - 1;
+        int maxTx = originX + 1, maxTz = originZ + 1;
+
         var queue   = new Queue<Vector2Int>();
         var inQueue = new HashSet<Vector2Int>();
 
@@ -155,6 +169,12 @@ public class TerrainEditController : MonoBehaviour
             if (terrainGrid.GetTileShape(tx, tz) == oldShape &&
                 terrainGrid.GetTileHeight(tx, tz) == oldHeight) continue;
 
+            // Expand dirty bounds to cover this changed tile and its neighbours.
+            if (tx - 1 < minTx) minTx = tx - 1;
+            if (tz - 1 < minTz) minTz = tz - 1;
+            if (tx + 1 > maxTx) maxTx = tx + 1;
+            if (tz + 1 > maxTz) maxTz = tz + 1;
+
             for (int dz = -1; dz <= 1; dz++)
             for (int dx = -1; dx <= 1; dx++)
             {
@@ -165,6 +185,8 @@ public class TerrainEditController : MonoBehaviour
                 if (!inQueue.Contains(np)) { queue.Enqueue(np); inQueue.Add(np); }
             }
         }
+
+        return new RectInt(minTx, minTz, maxTx - minTx + 1, maxTz - minTz + 1);
     }
 
     /// <summary>
@@ -193,9 +215,8 @@ public class TerrainEditController : MonoBehaviour
         ApplySlopeShape(tx, tz);
 
         // Cascade: spreads outward until no further tiles change.
-        CascadeSlopeRefresh(tx, tz);
-
-        ApplyAndRefresh();
+        var dirty = CascadeSlopeRefresh(tx, tz);
+        ApplyAndRefresh(dirty);
         return true;
     }
 
@@ -206,9 +227,8 @@ public class TerrainEditController : MonoBehaviour
         terrainGrid.SetTileShape(tx, tz, TileShape.Flat);
 
         // Cascade to update neighbours that were leaning on this slope.
-        CascadeSlopeRefresh(tx, tz);
-
-        ApplyAndRefresh();
+        var dirty = CascadeSlopeRefresh(tx, tz);
+        ApplyAndRefresh(dirty);
     }
 
     // ── Internal ─────────────────────────────────────────────────────────────────
@@ -468,10 +488,18 @@ public class TerrainEditController : MonoBehaviour
         terrainGrid.SetTileShape(tx, tz, shape);
     }
 
+    private void ApplyAndRefresh(RectInt dirtyTiles)
+    {
+        terrainGrid.SyncEnabledCellsFromShapes();
+        if (HasSections) terrainGrid.ApplyToTerrainsRect(dirtyTiles);
+        if (minimapUI != null) minimapUI.Rebuild();
+        if (decorateMinimap != null && decorateMinimap.gameObject.activeInHierarchy) decorateMinimap.Rebuild();
+    }
+
     private void ApplyAndRefresh()
     {
         terrainGrid.SyncEnabledCellsFromShapes();
-        if (unityTerrain != null) terrainGrid.ApplyToTerrain(unityTerrain);
+        if (HasSections) terrainGrid.ApplyToTerrains();
         if (minimapUI != null) minimapUI.Rebuild();
         if (decorateMinimap != null && decorateMinimap.gameObject.activeInHierarchy) decorateMinimap.Rebuild();
     }
