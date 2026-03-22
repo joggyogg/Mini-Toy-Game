@@ -1,4 +1,3 @@
-# Unity generated folders
 [Ll]ibrary/
 [Tt]emp/
 [Oo]bj/
@@ -6,12 +5,8 @@
 [Bb]uilds/
 [Ll]ogs/
 [Uu]ser[Ss]ettings/
-
-# OS files
 .DS_Store
 Thumbs.db
-
-# VS/Rider project files
 *.csproj
 *.sln
 *.slnx
