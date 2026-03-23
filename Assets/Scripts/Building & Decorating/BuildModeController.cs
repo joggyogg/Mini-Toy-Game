@@ -55,7 +55,7 @@ public class BuildModeController : MonoBehaviour
         {
             if (catalog != null) catalogUI.SetCatalog(catalog);
             catalogUI.gameObject.SetActive(true);
-            catalogUI.OnDefinitionSelected += HandleDefinitionSelected;
+            catalogUI.OnDefinitionSelected += HandleVariantSelected;
         }
 
         if (minimapUI != null)
@@ -76,7 +76,7 @@ public class BuildModeController : MonoBehaviour
 
         if (catalogUI != null)
         {
-            catalogUI.OnDefinitionSelected -= HandleDefinitionSelected;
+            catalogUI.OnDefinitionSelected -= HandleVariantSelected;
             catalogUI.gameObject.SetActive(false);
         }
 
@@ -85,12 +85,13 @@ public class BuildModeController : MonoBehaviour
 
     /// <summary>
     /// Spawns a furniture piece near the player and registers it in the placement list.
+    /// variantIndex selects a colour/style variant (-1 or out of range = use the base prefab).
     /// Does nothing if no valid placement position is found.
     /// </summary>
-    public void SpawnFurniture(FurnitureDefinition definition)
+    public void SpawnFurniture(FurnitureDefinition definition, int variantIndex = -1)
     {
         if (definition == null) return;
-        if (!definition.TryGetPlaceableAuthoring(out PlaceableGridAuthoring authoringPrefab)) return;
+        if (!definition.TryGetPlaceableAuthoring(variantIndex, out PlaceableGridAuthoring authoringPrefab)) return;
         if (terrain == null) return;
 
         Vector3 playerPos = playerMotor != null ? playerMotor.transform.position : transform.position;
@@ -142,11 +143,11 @@ public class BuildModeController : MonoBehaviour
 
     private void OnDestroy()
     {
-        if (catalogUI != null) catalogUI.OnDefinitionSelected -= HandleDefinitionSelected;
+        if (catalogUI != null) catalogUI.OnDefinitionSelected -= HandleVariantSelected;
     }
 
-    private void HandleDefinitionSelected(FurnitureDefinition definition)
+    private void HandleVariantSelected(FurnitureDefinition definition, int variantIndex)
     {
-        SpawnFurniture(definition);
+        SpawnFurniture(definition, variantIndex);
     }
 }

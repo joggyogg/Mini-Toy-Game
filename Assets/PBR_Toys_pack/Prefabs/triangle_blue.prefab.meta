@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 10fff1e65cc8bce4fa883b6379a4c782
+timeCreated: 1484854370
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/triangle_blue.prefab
+  uploadId: 161120

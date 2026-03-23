@@ -90,11 +90,17 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
     {
         int flatIndex = GetFlatIndex(xIndex, zIndex);
         if (flatIndex < 0 || flatIndex >= enabledCells.Count)
-        {
             return false;
-        }
 
-        return enabledCells[flatIndex];
+        if (!enabledCells[flatIndex])
+            return false;
+
+        // Slope tiles cannot be used for furniture placement or walkability.
+        int s = SubtilesPerFullTile;
+        if (ComputeTileShape(xIndex / s, zIndex / s) != TileShape.Flat)
+            return false;
+
+        return true;
     }
 
     public bool TryWorldToCell(Vector3 worldPosition, out Vector2Int cell)
@@ -1129,19 +1135,17 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
                 Matrix4x4 prevMatrix = Gizmos.matrix;
                 Gizmos.matrix = Matrix4x4.TRS(worldCenter, transform.rotation, Vector3.one);
 
-                if (GetCell(x, z))
+                if (!GetCell(x, z))
                 {
-                    GetSubtileColors(x, z, out Color fill, out Color outline);
-                    Gizmos.color = fill;
-                    Gizmos.DrawCube(Vector3.zero, worldSize);
-                    Gizmos.color = outline;
-                    Gizmos.DrawWireCube(Vector3.zero, worldSize);
+                    Gizmos.matrix = prevMatrix;
+                    continue;
                 }
-                else
-                {
-                    Gizmos.color = DisabledCellOutlineColor;
-                    Gizmos.DrawWireCube(Vector3.zero, worldSize);
-                }
+
+                GetSubtileColors(x, z, out Color fill, out Color outline);
+                Gizmos.color = fill;
+                Gizmos.DrawCube(Vector3.zero, worldSize);
+                Gizmos.color = outline;
+                Gizmos.DrawWireCube(Vector3.zero, worldSize);
 
                 Gizmos.matrix = prevMatrix;
             }

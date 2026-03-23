@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 62a5110c67727a840a8e94df5f7dea9a
+timeCreated: 1484900441
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/crayon_red.prefab
+  uploadId: 161120

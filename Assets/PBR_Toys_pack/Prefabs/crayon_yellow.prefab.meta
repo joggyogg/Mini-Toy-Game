@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: d044298b6d3f11b4ca6e787376edc216
+timeCreated: 1484900444
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/crayon_yellow.prefab
+  uploadId: 161120

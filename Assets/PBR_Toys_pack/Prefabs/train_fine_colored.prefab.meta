@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: a71a7d673c3ace6498582252e197872b
+timeCreated: 1484853584
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/train_fine_colored.prefab
+  uploadId: 161120

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: e307686e91935d3449f2fad8eb65d7f6
+timeCreated: 1484853728
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/plane_fine_green.prefab
+  uploadId: 161120

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 68c26ff8ff3fcb24ab83e173803a74ba
+timeCreated: 1484740189
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Materials/blank_Blocks.mat
+  uploadId: 161120

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: a3c5dab197c06c0499705fc9caed4e96
+timeCreated: 1484742033
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Materials/Plane_old_red.mat
+  uploadId: 161120

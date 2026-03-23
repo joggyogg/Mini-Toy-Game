@@ -118,6 +118,52 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
             lastPlayerFullTile = current;
             Rebuild();
         }
+
+        if (isDragging && dragging != null)
+            TryNudgeDragging();
+    }
+
+    /// <summary>
+    /// Moves the selected piece one subtile cell (0.5 world units) in the pressed arrow direction.
+    /// The move is only applied if the new position passes all placement validation checks.
+    /// </summary>
+    private void TryNudgeDragging()
+    {
+        Vector2Int nudge = Vector2Int.zero;
+        if      (Input.GetKeyDown(KeyCode.UpArrow))    nudge = new Vector2Int( 0,  1);
+        else if (Input.GetKeyDown(KeyCode.DownArrow))  nudge = new Vector2Int( 0, -1);
+        else if (Input.GetKeyDown(KeyCode.LeftArrow))  nudge = new Vector2Int(-1,  0);
+        else if (Input.GetKeyDown(KeyCode.RightArrow)) nudge = new Vector2Int( 1,  0);
+        if (nudge == Vector2Int.zero) return;
+
+        PlaceableGridAuthoring auth = dragging.Instance;
+        if (auth == null) return;
+
+        // Derive the current terrain-cell origin of the piece (same math as OnPointerDown).
+        Vector2 maleOffset = auth.MaleGridOriginLocalOffset;
+        float tileSize = auth.FemaleTileSize;
+        Transform t = auth.transform;
+        Vector3 worldCell00 = t.position
+            + t.right   * (maleOffset.x + 0.5f * tileSize)
+            + t.forward * (maleOffset.y + 0.5f * tileSize);
+        if (!terrain.TryWorldToCell(worldCell00, out Vector2Int currentOrigin)) return;
+
+        Vector2Int newOrigin = currentOrigin + nudge;
+
+        if (dragIsFloorMove)
+        {
+            List<PlacedFurnitureRecord> children = GatherAllChildren(dragging);
+            if (DragOnFloor(auth, newOrigin, children, out Vector3 delta) && delta != Vector3.zero)
+                MoveChildrenByDelta(children, delta);
+        }
+        else if (currentLayerIndex > 0 && surfaceMap.Count > 0)
+        {
+            DragOnSurface(auth, newOrigin);
+        }
+        else
+        {
+            DragOnFloor(auth, newOrigin, null, out _);
+        }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────────

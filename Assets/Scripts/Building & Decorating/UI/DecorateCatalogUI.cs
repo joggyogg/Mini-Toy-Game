@@ -19,8 +19,9 @@ public class DecorateCatalogUI : MonoBehaviour
     [SerializeField] private Transform buttonContainer;
     [SerializeField] private ScrollRect scrollRect;
 
-    /// <summary>Fired when the player selects a furniture item. Argument is the chosen definition.</summary>
-    public event Action<FurnitureDefinition> OnDefinitionSelected;
+    /// <summary>Fired when the player selects a furniture item.
+    /// variantIndex is -1 for single-prefab definitions, or the chosen index into FurnitureDefinition.Variants.</summary>
+    public event Action<FurnitureDefinition, int> OnDefinitionSelected;
 
     private readonly List<FurnitureCatalogButton> spawnedButtons = new List<FurnitureCatalogButton>();
 
@@ -60,7 +61,7 @@ public class DecorateCatalogUI : MonoBehaviour
             if (def == null) continue;
 
             FurnitureCatalogButton btn = Instantiate(buttonPrefab, buttonContainer);
-            btn.Initialise(def, HandleDefinitionSelected);
+            btn.Initialise(def, HandleVariantSelected);
             spawnedButtons.Add(btn);
         }
 
@@ -80,8 +81,8 @@ public class DecorateCatalogUI : MonoBehaviour
         spawnedButtons.Clear();
     }
 
-    private void HandleDefinitionSelected(FurnitureDefinition def)
+    private void HandleVariantSelected(FurnitureDefinition def, int variantIndex)
     {
-        OnDefinitionSelected?.Invoke(def);
+        OnDefinitionSelected?.Invoke(def, variantIndex);
     }
 }

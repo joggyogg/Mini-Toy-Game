@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: cf2f13e5cf1704b4e80202cab10d977a
+timeCreated: 1484741353
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Materials/fine_cube_Y_F.mat
+  uploadId: 161120
