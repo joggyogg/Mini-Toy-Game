@@ -37,6 +37,13 @@ public class TerrainGridAuthoringWindow : EditorWindow
     private bool dragPaintValue;
     private Vector2Int lastPaintedCell = new Vector2Int(int.MinValue, int.MinValue);
 
+    // WFC generation state
+    private bool generationFoldout = true;
+    private TerrainWFCConfig wfcConfig = TerrainWFCConfig.Default;
+
+    // Tile matrix foldout (defaults closed for performance on large grids).
+    private bool tileMatrixFoldout = false;
+
     // ── Public entry point ────────────────────────────────────────────────────────
 
     [MenuItem("Window/Mini Toy Game/Terrain Grid Authoring")]
@@ -79,7 +86,11 @@ public class TerrainGridAuthoringWindow : EditorWindow
 
         EditorGUILayout.BeginHorizontal();
         DrawLeftPanel();
-        DrawRightPanel();
+        tileMatrixFoldout = EditorGUILayout.Foldout(tileMatrixFoldout, "Tile Matrix", true, EditorStyles.foldoutHeader);
+        if (tileMatrixFoldout)
+        {
+            DrawRightPanel();
+        }
         EditorGUILayout.EndHorizontal();
     }
 
@@ -165,6 +176,50 @@ public class TerrainGridAuthoringWindow : EditorWindow
         EditorGUILayout.HelpBox(
             "Pink/orange cells = enabled subtiles.\nLeft-click or drag to toggle cells.\nGreen overlay shows walkable 1\u00d71 tiles in the scene.",
             MessageType.None);
+
+        // ── WFC Terrain Generation ────────────────────────────────────────────
+        EditorGUILayout.Space(12);
+        generationFoldout = EditorGUILayout.Foldout(generationFoldout, "Terrain Generation (WFC)", true, EditorStyles.foldoutHeader);
+        if (generationFoldout)
+        {
+            EditorGUI.indentLevel++;
+
+            // Show discovered child terrains as a read-only info line.
+            Terrain[] childTerrains = targetAuthoring.GetComponentsInChildren<Terrain>();
+            string terrainInfo = childTerrains.Length == 0
+                ? "None found (add Terrain children)"
+                : $"{childTerrains.Length} child terrain(s)";
+            EditorGUILayout.LabelField("Child Terrains", terrainInfo);
+
+            wfcConfig.perlinScale = EditorGUILayout.FloatField("Perlin Scale", wfcConfig.perlinScale);
+            wfcConfig.octaves     = EditorGUILayout.IntSlider("Octaves", wfcConfig.octaves, 1, 8);
+            wfcConfig.persistence = EditorGUILayout.Slider("Persistence", wfcConfig.persistence, 0f, 1f);
+            wfcConfig.lacunarity  = EditorGUILayout.FloatField("Lacunarity", wfcConfig.lacunarity);
+            wfcConfig.amplitude   = EditorGUILayout.IntField("Max Height Level", wfcConfig.amplitude);
+            wfcConfig.seed        = EditorGUILayout.IntField("Seed", wfcConfig.seed);
+
+            EditorGUILayout.Space(4);
+            if (GUILayout.Button("Generate Terrain"))
+            {
+                RecordChange("Generate WFC Terrain");
+                TerrainWFCGenerator.Generate(targetAuthoring, wfcConfig, childTerrains);
+                MarkDirty();
+            }
+            if (GUILayout.Button("Randomise Seed & Generate"))
+            {
+                wfcConfig.seed = Random.Range(0, 99999);
+                RecordChange("Generate WFC Terrain (Random)");
+                TerrainWFCGenerator.Generate(targetAuthoring, wfcConfig, childTerrains);
+                MarkDirty();
+            }
+            if (GUILayout.Button("Clear Terrain"))
+            {
+                RecordChange("Clear WFC Terrain");
+                TerrainWFCGenerator.Clear(targetAuthoring, childTerrains);
+                MarkDirty();
+            }
+            EditorGUI.indentLevel--;
+        }
 
         EditorGUILayout.EndVertical();
     }

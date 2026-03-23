@@ -6,9 +6,9 @@ using UnityEngine.UI;
 /// <summary>
 /// Minimap panel for the terraform tool. Displays an overhead view of the terrain with
 /// height-tinted tiles. The player can paint-drag with three tools:
-///   Raise — increment the full tile's height level by 1.
-///   Dig   — decrement the full tile's height level by 1 (min 0).
-///   Slope — paint a ramp facing the highest adjacent neighbour.
+///   Raise   — increment the full tile's height level by 1.
+///   Dig     — decrement the full tile's height level by 1 (min 0).
+///   Flatten — click to sample a tile's height, drag to set other tiles to that height.
 ///
 /// Also shows the same layer list (from furniture female tiles) as DecorateMinimapUI,
 /// and draws a white player-position marker.
@@ -29,7 +29,7 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
 
     [SerializeField] private Button raiseButton;
     [SerializeField] private Button digButton;
-    [SerializeField] private Button slopeButton;
+    [SerializeField] private Button flattenButton;
 
     // ── Colours ───────────────────────────────────────────────────────────────────
     // Base tile colours (same checkerboard as decorate minimap).
@@ -45,7 +45,6 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
 
     // ── State ─────────────────────────────────────────────────────────────────────
     private TerrainGridAuthoring terrain;
-    private Terrain               unityTerrain;
     private TerrainEditController controller;
     private IReadOnlyList<PlacedFurnitureRecord> placedFurniture;
     private PlayerMotor playerMotor;
@@ -60,10 +59,11 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
     private List<float> availableLayers = new List<float>();
     private int currentLayerIndex;
 
-    private enum Tool { Raise, Dig, Slope }
+    private enum Tool { Raise, Dig, Flatten }
     private Tool activeTool = Tool.Raise;
 
     private bool isPainting;
+    private int flattenTargetHeight;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -76,18 +76,18 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
     {
         if (layerUpButton   != null) layerUpButton.onClick.AddListener(LayerUp);
         if (layerDownButton != null) layerDownButton.onClick.AddListener(LayerDown);
-        if (raiseButton != null) raiseButton.onClick.AddListener(() => SetTool(Tool.Raise));
-        if (digButton   != null) digButton.onClick.AddListener(() => SetTool(Tool.Dig));
-        if (slopeButton != null) slopeButton.onClick.AddListener(() => SetTool(Tool.Slope));
+        if (raiseButton   != null) raiseButton.onClick.AddListener(() => SetTool(Tool.Raise));
+        if (digButton     != null) digButton.onClick.AddListener(() => SetTool(Tool.Dig));
+        if (flattenButton != null) flattenButton.onClick.AddListener(() => SetTool(Tool.Flatten));
     }
 
     private void OnDisable()
     {
         if (layerUpButton   != null) layerUpButton.onClick.RemoveListener(LayerUp);
         if (layerDownButton != null) layerDownButton.onClick.RemoveListener(LayerDown);
-        if (raiseButton != null) raiseButton.onClick.RemoveAllListeners();
-        if (digButton   != null) digButton.onClick.RemoveAllListeners();
-        if (slopeButton != null) slopeButton.onClick.RemoveAllListeners();
+        if (raiseButton   != null) raiseButton.onClick.RemoveAllListeners();
+        if (digButton     != null) digButton.onClick.RemoveAllListeners();
+        if (flattenButton != null) flattenButton.onClick.RemoveAllListeners();
     }
 
     private void Update()
@@ -111,17 +111,15 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
     /// Call from TerrainEditController.EnterTerraformMode(). placedFurniture may be null
     /// if no decorate session has happened yet; the layer list will then show only Floor.
     /// </summary>
-    public void Initialise(TerrainGridAuthoring terrainGrid, Terrain unity,
+    public void Initialise(TerrainGridAuthoring terrainGrid,
                            TerrainEditController ctrl,
                            IReadOnlyList<PlacedFurnitureRecord> furniture = null,
                            PlayerMotor motor = null)
     {
         terrain       = terrainGrid;
-        unityTerrain  = unity;
         controller    = ctrl;
         placedFurniture = furniture;
         playerMotor   = motor;
-        currentLayerIndex = 0;
 
         if (playerMotor != null)
         {
@@ -129,6 +127,10 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
                 ? playerMotor.CurrentFullTile
                 : terrain.TryGetNearestWalkableFullTile(playerMotor.transform.position, out Vector2Int t0) ? t0 : default;
         }
+
+        // Build layer list early so we can pick the layer the player is standing on.
+        RefreshAvailableLayers();
+        currentLayerIndex = FindLayerForPlayerTile();
 
         Rebuild();
     }
@@ -158,9 +160,9 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
     private void UpdateToolButtonVisuals()
     {
         // Highlight the active tool button by changing its color block.
-        SetButtonHighlight(raiseButton, activeTool == Tool.Raise);
-        SetButtonHighlight(digButton,   activeTool == Tool.Dig);
-        SetButtonHighlight(slopeButton, activeTool == Tool.Slope);
+        SetButtonHighlight(raiseButton,   activeTool == Tool.Raise);
+        SetButtonHighlight(digButton,     activeTool == Tool.Dig);
+        SetButtonHighlight(flattenButton, activeTool == Tool.Flatten);
     }
 
     private static void SetButtonHighlight(Button btn, bool active)
@@ -172,6 +174,24 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
     }
 
     // ── Layer navigation ──────────────────────────────────────────────────────────
+
+    private int FindLayerForPlayerTile()
+    {
+        if (terrain == null || availableLayers.Count == 0) return 0;
+        Vector2Int tile = lastPlayerFullTile;
+        int level = terrain.GetTileLevel(tile.x, tile.y);
+        if (level == 0) return 0; // Floor is always layer index 0
+        float worldY = terrain.GetTerrainLevelWorldY(level);
+        float quantized = Mathf.Round(worldY / 0.5f) * 0.5f;
+        int best = 0;
+        float bestDist = Mathf.Abs(availableLayers[0] - quantized);
+        for (int i = 1; i < availableLayers.Count; i++)
+        {
+            float d = Mathf.Abs(availableLayers[i] - quantized);
+            if (d < bestDist) { bestDist = d; best = i; }
+        }
+        return best;
+    }
 
     private void LayerUp()
     {
@@ -291,8 +311,8 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
                 {
                     int tileX    = cx / s; int tileZ    = cz / s;
                     int subtileX = cx % s; int subtileZ = cz % s;
-                    int tileHeight = terrain.GetTileHeight(tileX, tileZ);
-                    TileShape tileShape = terrain.GetTileShape(tileX, tileZ);
+                    int tileHeight = terrain.GetTileLevel(tileX, tileZ);
+                    TileShape tileShape = terrain.ComputeTileShape(tileX, tileZ);
                     int levelsBelow = viewTerrainLevel - tileHeight;
 
                     if (levelsBelow < 0)
@@ -421,6 +441,14 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
     public void OnPointerDown(PointerEventData eventData)
     {
         isPainting = true;
+
+        // For Flatten: lock the target height from the first tile clicked.
+        if (activeTool == Tool.Flatten && terrain != null)
+        {
+            if (TryScreenToFullTile(eventData.position, out Vector2Int origin))
+                flattenTargetHeight = terrain.GetTileLevel(origin.x, origin.y);
+        }
+
         PaintAt(eventData.position);
     }
 
@@ -447,8 +475,8 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
             case Tool.Dig:
                 controller.LowerTile(tile.x, tile.y);
                 break;
-            case Tool.Slope:
-                controller.TryPaintSlope(tile.x, tile.y);
+            case Tool.Flatten:
+                controller.FlattenTile(tile.x, tile.y, flattenTargetHeight);
                 break;
         }
     }

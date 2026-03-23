@@ -12,12 +12,16 @@ public class TerrainGridAuthoringEditor : Editor
     private SerializedProperty femaleTileSizeProperty;
     private SerializedProperty gridSizeInCellsProperty;
     private SerializedProperty drawGridGizmosProperty;
+    private SerializedProperty gizmoPerformanceModeProperty;
+    private SerializedProperty cullOffscreenGizmosProperty;
 
     private void OnEnable()
     {
         femaleTileSizeProperty = serializedObject.FindProperty("femaleTileSize");
         gridSizeInCellsProperty = serializedObject.FindProperty("gridSizeInCells");
         drawGridGizmosProperty = serializedObject.FindProperty("drawGridGizmos");
+        gizmoPerformanceModeProperty = serializedObject.FindProperty("gizmoPerformanceMode");
+        cullOffscreenGizmosProperty = serializedObject.FindProperty("cullOffscreenGizmos");
     }
 
     public override void OnInspectorGUI()
@@ -29,6 +33,8 @@ public class TerrainGridAuthoringEditor : Editor
         EditorGUILayout.LabelField("Grid Settings", EditorStyles.boldLabel);
         EditorGUILayout.PropertyField(femaleTileSizeProperty, new GUIContent("Female Tile Size", "Width and depth of one subtile cell in world units. Must match all furniture prefabs (default 0.5)."));
         EditorGUILayout.PropertyField(drawGridGizmosProperty, new GUIContent("Draw Grid Gizmos"));
+        EditorGUILayout.PropertyField(gizmoPerformanceModeProperty, new GUIContent("Performance Mode", "When enabled, only full-tile overlays are drawn in gizmos (subtile gizmos hidden)."));
+        EditorGUILayout.PropertyField(cullOffscreenGizmosProperty, new GUIContent("Cull Offscreen Gizmos", "Skip drawing gizmos when they are outside the scene camera frustum."));
 
         using (new EditorGUI.DisabledScope(true))
         {

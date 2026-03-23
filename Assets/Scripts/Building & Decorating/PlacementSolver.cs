@@ -55,6 +55,7 @@ public static class PlacementSolver
         int s = terrain.SubtilesPerFullTile;
         Vector2Int startCell = new Vector2Int(startFull.x * s, startFull.y * s);
         Vector2Int cellSize = terrain.GridSizeInCells;
+        int targetLevel = terrain.GetTileLevel(startFull.x, startFull.y);
 
         // BFS spiral.
         int maxRadius = cellSize.x + cellSize.y;
@@ -70,7 +71,7 @@ public static class PlacementSolver
                     int originX = startCell.x + dx;
                     int originZ = startCell.y + dz;
 
-                    if (FitsAtOrigin(terrain, maleShape, originX, originZ, occupied))
+                    if (FitsAtOrigin(terrain, maleShape, originX, originZ, occupied, targetLevel))
                     {
                         if (!terrain.TryGetCellCenterWorld(originX, originZ, out Vector3 cell00Center)) continue;
 
@@ -116,7 +117,8 @@ public static class PlacementSolver
         TerrainGridAuthoring terrain,
         List<Vector2Int> maleShape,
         int originX, int originZ,
-        HashSet<Vector2Int> occupied)
+        HashSet<Vector2Int> occupied,
+        int targetLevel)
     {
         int s = terrain.SubtilesPerFullTile;
         foreach (Vector2Int cell in maleShape)
@@ -127,9 +129,9 @@ public static class PlacementSolver
             if (!terrain.GetCell(tx, tz)) return false;
             if (occupied.Contains(new Vector2Int(tx, tz))) return false;
 
-            // Don't place ground-layer furniture on raised terrain tiles.
+            // Keep floor placement on the same terrain level as the player's start tile.
             int ftx = tx / s;  int ftz = tz / s;
-            if (terrain.GetTileHeight(ftx, ftz) > 0) return false;
+            if (terrain.GetTileLevel(ftx, ftz) != targetLevel) return false;
         }
         return true;
     }

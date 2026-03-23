@@ -98,6 +98,16 @@ public class PlaceableGridAuthoring : MonoBehaviour
         public float MaxZ;
     }
 
+    private void Awake()
+    {
+        // Recompute grid metrics at runtime so that values added after the prefab was
+        // last saved (e.g. maleGridFloorLocalY) are derived from the live colliders.
+        if (deriveMaleGridFromColliders)
+            RecalculateMaleGridFromColliders();
+        else
+            EnsureValidData();
+    }
+
     private void Reset()
     {
         // Try to create sensible defaults the first time the component is added.
@@ -734,13 +744,16 @@ public class PlaceableGridAuthoring : MonoBehaviour
 
     private IEnumerable<FemaleGridLayer> EnumerateLayersRecursive(FemaleGridGroup group)
     {
+        if (group == null) yield break;
         foreach (FemaleGridHierarchyEntry child in group.Children)
         {
+            if (child == null) continue;
             if (child.IsLayer)
             {
                 yield return child.Layer;
                 continue;
             }
+            if (!child.IsGroup) continue;
 
             foreach (FemaleGridLayer nestedLayer in EnumerateLayersRecursive(child.Group))
             {

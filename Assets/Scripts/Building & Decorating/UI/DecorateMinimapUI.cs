@@ -71,6 +71,9 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
     // with all pieces sitting on its surface following along.
     private bool dragIsFloorMove;
 
+    // Debug overlay state (shown via OnGUI while dragging)
+    private string debugDragStatus = "";
+
     // Surface layer — populated each Rebuild when currentLayerIndex > 0.
     // Maps terrain-subtile cell → info about the female-grid cell at the current layer height.
     private readonly Dictionary<Vector2Int, SurfaceCell> surfaceMap = new Dictionary<Vector2Int, SurfaceCell>();
@@ -125,7 +128,6 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
         terrain = terrainGrid;
         placedFurniture = furniture;
         playerMotor = motor;
-        currentLayerIndex = 0;
         if (playerMotor != null)
         {
             lastPlayerFullTile = playerMotor.IsInDecorateMode
@@ -133,6 +135,7 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
                 : terrain.TryGetNearestWalkableFullTile(playerMotor.transform.position, out Vector2Int t0) ? t0 : default;
         }
         RefreshAvailableLayers();
+        currentLayerIndex = FindLayerForPlayerTile();
         Rebuild();
     }
 
@@ -221,27 +224,10 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
                 Vector3 worldCell00 = t.position + t.right * (maleOffset.x + 0.5f * tileSize) + t.forward * (maleOffset.y + 0.5f * tileSize);
                 terrain.TryWorldToCell(worldCell00, out Vector2Int currentOrigin);
 
-                // Determine whether the hit piece is a host (has female layer(s), i.e. other items
-                // may sit on it) and should therefore carry its children when moved.
-                // On a non-floor layer: anything that isn't itself sitting on the current surface is a host.
-                // On the floor layer: any piece that has female layers at all is a host.
-                dragIsFloorMove = false;
-                if (currentLayerIndex > 0)
-                {
-                    float surfaceY = GetSurfaceWorldY();
-                    float baseY    = auth.transform.position.y + auth.MaleGridFloorLocalY;
-                    bool sitsOnSurface = !float.IsNaN(surfaceY) && Mathf.Abs(baseY - surfaceY) < 0.1f;
-                    dragIsFloorMove = !sitsOnSurface;
-                }
-                else
-                {
-                    // Floor layer: host if the piece has any female layers.
-                    foreach (FemaleGridLayer _ in auth.EnumerateFemaleLayers())
-                    {
-                        dragIsFloorMove = true;
-                        break;
-                    }
-                }
+                // Determine whether the hit piece sits on terrain (floor piece that
+                // carries children) or on another furniture's female surface (surface piece).
+                // This check is purely physical — independent of which minimap layer is viewed.
+                dragIsFloorMove = !IsSittingOnFurniture(hit);
 
                 dragging = hit;
                 dragOffsetCells = hitCell - currentOrigin;
@@ -268,19 +254,19 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
 
         if (dragIsFloorMove)
         {
-            // Gather children from ALL female layers of the host (works whether viewing floor or
-            // a higher layer). Children are excluded from the floor occupancy test so they don't
-            // falsely block the host, then translated by the same world delta as the host.
             List<PlacedFurnitureRecord> children = GatherAllChildren(dragging);
+            debugDragStatus = $"floorMove host='{auth.name}' origin={newOrigin} children={children.Count}";
             if (DragOnFloor(auth, newOrigin, children, out Vector3 delta) && delta != Vector3.zero)
                 MoveChildrenByDelta(children, delta);
         }
         else if (currentLayerIndex > 0 && surfaceMap.Count > 0)
         {
+            debugDragStatus = $"surfaceDrag piece='{auth.name}' layerIdx={currentLayerIndex}";
             DragOnSurface(auth, newOrigin);
         }
         else
         {
+            debugDragStatus = $"floorDrag piece='{auth.name}' origin={newOrigin}";
             DragOnFloor(auth, newOrigin, null, out _);
         }
     }
@@ -314,11 +300,20 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
         }
 
         // Build occupied cells from every placed piece except the one being dragged and its children.
+        // On floor-layer drags, only consider pieces on the same terrain level.
         var occupied = new HashSet<Vector2Int>();
+        int sourceLevel = 0;
+        bool hasSourceLevel = currentLayerIndex != 0 || TryGetPieceTerrainLevel(auth, out sourceLevel);
         foreach (PlacedFurnitureRecord record in placedFurniture)
         {
             if (record == dragging || record.Instance == null) continue;
             if (alsoExclude != null && alsoExclude.Contains(record)) continue;
+            if (currentLayerIndex == 0)
+            {
+                if (!hasSourceLevel) return false;
+                if (!TryGetPieceTerrainLevel(record.Instance, out int recLevel)) continue;
+                if (recLevel != sourceLevel) continue;
+            }
             Vector2Int recSize = record.Instance.MaleGridSizeInCells;
             float recTileSize = record.Instance.FemaleTileSize;
             Vector2 recOffset = record.Instance.MaleGridOriginLocalOffset;
@@ -345,13 +340,14 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
         {
             if (!terrain.GetCell(tc.x, tc.y)) return false;
             if (occupied.Contains(tc)) return false;
-            // On the floor layer, raised tiles are inaccessible from floor level.
-            // (Surface drag via DragOnSurface handles raised-layer interaction.)
+            // On the floor layer, keep movement on the dragged piece's current terrain level.
+            // This avoids hardcoding "level 0" as the only valid floor.
             if (currentLayerIndex == 0)
             {
                 int ftx = tc.x / subtPerFull;
                 int ftz = tc.y / subtPerFull;
-                if (terrain.GetTileHeight(ftx, ftz) > 0) return false;
+                if (!hasSourceLevel) return false;
+                if (terrain.GetTileLevel(ftx, ftz) != sourceLevel) return false;
             }
         }
 
@@ -414,6 +410,78 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
             auth.transform.position = newPos;
             Rebuild();
         }
+    }
+
+    // Returns the terrain level currently under this piece (based on the first enabled male cell).
+    private bool TryGetPieceTerrainLevel(PlaceableGridAuthoring auth, out int level)
+    {
+        level = 0;
+        Vector2Int maleSize = auth.MaleGridSizeInCells;
+        float tileSize = auth.FemaleTileSize;
+        Vector2 maleOffset = auth.MaleGridOriginLocalOffset;
+        Transform t = auth.transform;
+        int s = terrain.SubtilesPerFullTile;
+
+        for (int z = 0; z < maleSize.y; z++)
+        {
+            for (int x = 0; x < maleSize.x; x++)
+            {
+                if (!auth.GetMaleCell(x, z)) continue;
+                float lx = maleOffset.x + (x + 0.5f) * tileSize;
+                float lz = maleOffset.y + (z + 0.5f) * tileSize;
+                Vector3 world = t.position + t.right * lx + t.forward * lz;
+                if (!terrain.TryWorldToCell(world, out Vector2Int tc)) continue;
+                level = terrain.GetTileLevel(tc.x / s, tc.y / s);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Returns true if 'piece' is physically sitting on another furniture's female-grid surface
+    /// (as opposed to sitting on the terrain). Checks Y-height match AND XZ cell overlap.
+    /// </summary>
+    private bool IsSittingOnFurniture(PlacedFurnitureRecord piece)
+    {
+        PlaceableGridAuthoring auth = piece.Instance;
+        if (auth == null) return false;
+        float baseY = auth.transform.position.y + auth.MaleGridFloorLocalY;
+
+        // Get one male cell of this piece for XZ overlap testing.
+        Vector2Int? pieceCell = null;
+        Vector2Int maleSize = auth.MaleGridSizeInCells;
+        float tileSize = auth.FemaleTileSize;
+        Vector2 maleOffset = auth.MaleGridOriginLocalOffset;
+        Transform pt = auth.transform;
+        for (int z = 0; z < maleSize.y && !pieceCell.HasValue; z++)
+            for (int x = 0; x < maleSize.x && !pieceCell.HasValue; x++)
+            {
+                if (!auth.GetMaleCell(x, z)) continue;
+                float lx = maleOffset.x + (x + 0.5f) * tileSize;
+                float lz = maleOffset.y + (z + 0.5f) * tileSize;
+                Vector3 w = pt.position + pt.right * lx + pt.forward * lz;
+                if (terrain.TryWorldToCell(w, out Vector2Int tc))
+                    pieceCell = tc;
+            }
+        if (!pieceCell.HasValue) return false;
+
+        const float yTol = 0.1f;
+        foreach (PlacedFurnitureRecord host in placedFurniture)
+        {
+            if (host == piece || host.Instance == null) continue;
+            PlaceableGridAuthoring hostAuth = host.Instance;
+            foreach (FemaleGridLayer layer in hostAuth.EnumerateFemaleLayers())
+            {
+                float worldSY = hostAuth.transform.position.y + hostAuth.MaleGridFloorLocalY + layer.LocalHeight;
+                if (Mathf.Abs(baseY - worldSY) > yTol) continue;
+                HashSet<Vector2Int> femaleCells = GetFemaleLayerCells(hostAuth, layer, enabledOnly: false);
+                if (ContainsCellOrNeighbor(femaleCells, pieceCell.Value))
+                    return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>Builds the set of terrain XZ cells occupied by pieces sitting at the given world Y.</summary>
@@ -527,8 +595,13 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
 
         // Collect the terrain cells the dragged piece would occupy at newOrigin (rotation-aware).
         List<Vector2Int> footprintList = GetRotatedCellsForOrigin(auth, newOrigin);
-        if (footprintList == null || footprintList.Count == 0) return false;
+        if (footprintList == null || footprintList.Count == 0)
+        {
+            debugDragStatus += " | snap: footprint empty";
+            return false;
+        }
         var footprint = new HashSet<Vector2Int>(footprintList);
+        bool hasDragLevel = TryGetPieceTerrainLevel(auth, out int dragLevel);
 
         foreach (PlacedFurnitureRecord host in placedFurniture)
         {
@@ -537,20 +610,43 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
             // own parent (that would cause the piece to snap onto something it's carrying).
             if (alsoExclude != null && alsoExclude.Contains(host)) continue;
 
+            // For floor drags, only snap onto hosts on the same terrain level.
+            if (currentLayerIndex == 0)
+            {
+                if (!hasDragLevel) continue;
+                if (!TryGetPieceTerrainLevel(host.Instance, out int hostLevel)) continue;
+                if (hostLevel != dragLevel) continue;
+            }
+
             PlaceableGridAuthoring hostAuth = host.Instance;
             Transform t = hostAuth.transform;
 
+            bool hasAnyLayer = false;
             foreach (FemaleGridLayer layer in hostAuth.EnumerateFemaleLayers())
             {
+                hasAnyLayer = true;
                 float worldSY = t.position.y + hostAuth.MaleGridFloorLocalY + layer.LocalHeight;
 
                 // Build the enabled-cell set for this female layer (rotation-aware).
                 HashSet<Vector2Int> enabledCells = GetFemaleLayerCells(hostAuth, layer, enabledOnly: true);
 
+                if (enabledCells.Count == 0)
+                {
+                    debugDragStatus += $" | host '{hostAuth.name}' layer '{layer.Name}' 0 enabled";
+                    continue;
+                }
+
                 // All footprint cells must be within enabled cells of this layer.
                 bool allFit = true;
                 foreach (Vector2Int tc in footprint)
-                    if (!enabledCells.Contains(tc)) { allFit = false; break; }
+                {
+                    if (!ContainsCellOrNeighbor(enabledCells, tc))
+                    {
+                        debugDragStatus += $" | cell {tc} not in '{hostAuth.name}' (has {enabledCells.Count})";
+                        allFit = false;
+                        break;
+                    }
+                }
                 if (!allFit) continue;
 
                 // Surface must not be blocked by other pieces already sitting there.
@@ -561,9 +657,14 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
                 if (anyBlocked) continue;
 
                 snappedSurfaceY = worldSY;
+                debugDragStatus += $" | SNAPPED to '{hostAuth.name}' surfY={worldSY:F2}";
                 return true;
             }
+
+            if (!hasAnyLayer)
+                debugDragStatus += $" | host '{hostAuth.name}' NO layers (floorY={hostAuth.MaleGridFloorLocalY:F3})";
         }
+        debugDragStatus += $" | no host matched (placed={placedFurniture.Count})";
         return false;
     }
 
@@ -652,6 +753,22 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
                 child.Instance.transform.position += delta;
     }
 
+    // World-to-cell projection can land on an adjacent cell near boundaries due to float precision.
+    // Treat immediate neighbours as equivalent when matching support relationships.
+    private static bool ContainsCellOrNeighbor(HashSet<Vector2Int> cells, Vector2Int tc)
+    {
+        if (cells.Contains(tc)) return true;
+        if (cells.Contains(new Vector2Int(tc.x + 1, tc.y))) return true;
+        if (cells.Contains(new Vector2Int(tc.x - 1, tc.y))) return true;
+        if (cells.Contains(new Vector2Int(tc.x, tc.y + 1))) return true;
+        if (cells.Contains(new Vector2Int(tc.x, tc.y - 1))) return true;
+        if (cells.Contains(new Vector2Int(tc.x + 1, tc.y + 1))) return true;
+        if (cells.Contains(new Vector2Int(tc.x + 1, tc.y - 1))) return true;
+        if (cells.Contains(new Vector2Int(tc.x - 1, tc.y + 1))) return true;
+        if (cells.Contains(new Vector2Int(tc.x - 1, tc.y - 1))) return true;
+        return false;
+    }
+
     /// <summary>
     /// Returns all placed pieces (excluding host) that sit on ANY of the host's female layers,
     /// regardless of which layer is currently viewed.
@@ -682,10 +799,15 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
             {
                 float worldSY = ct.position.y + currentAuth.MaleGridFloorLocalY + layer.LocalHeight;
                 HashSet<Vector2Int> cells = GetFemaleLayerCells(currentAuth, layer, enabledOnly: false);
+                debugDragStatus += $" | layer '{layer.Name}' cells={cells.Count} y={worldSY:F2}";
                 if (cells.Count > 0)
                     layers.Add((cells, worldSY));
             }
-            if (layers.Count == 0) continue;
+            if (layers.Count == 0)
+            {
+                debugDragStatus += $" | '{currentAuth.name}' has 0 layers with cells";
+                continue;
+            }
 
             const float yTolerance = 0.1f;
 
@@ -721,7 +843,7 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
                         float lx = maleOffset.x + (x + 0.5f) * tileSize;
                         float lz = maleOffset.y + (z + 0.5f) * tileSize;
                         Vector3 cellWorld = t.position + t.right * lx + t.forward * lz;
-                        if (terrain.TryWorldToCell(cellWorld, out Vector2Int tc) && matchedCells.Contains(tc))
+                        if (terrain.TryWorldToCell(cellWorld, out Vector2Int tc) && ContainsCellOrNeighbor(matchedCells, tc))
                             isChild = true;
                     }
 
@@ -1068,6 +1190,24 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
 
     // ── Layer helpers ─────────────────────────────────────────────────────────────
 
+    private int FindLayerForPlayerTile()
+    {
+        if (terrain == null || availableLayers.Count == 0) return 0;
+        Vector2Int tile = lastPlayerFullTile;
+        int level = terrain.GetTileLevel(tile.x, tile.y);
+        if (level == 0) return 0;
+        float worldY = terrain.GetTerrainLevelWorldY(level);
+        float quantized = Mathf.Round(worldY / 0.5f) * 0.5f;
+        int best = 0;
+        float bestDist = Mathf.Abs(availableLayers[0] - quantized);
+        for (int i = 1; i < availableLayers.Count; i++)
+        {
+            float d = Mathf.Abs(availableLayers[i] - quantized);
+            if (d < bestDist) { bestDist = d; best = i; }
+        }
+        return best;
+    }
+
     private void RefreshAvailableLayers()
     {
         availableLayers.Clear();
@@ -1117,24 +1257,31 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
 
     private bool IsRecordOnLayer(PlacedFurnitureRecord record, float targetHeight)
     {
-        // Layer 0 shows everything.
-        if (targetHeight == 0f) return true;
-
         PlaceableGridAuthoring auth = record.Instance;
         Transform t = auth.transform;
+        float baseY = t.position.y + auth.MaleGridFloorLocalY;
+
+        if (targetHeight == 0f)
+        {
+            // Floor layer: only show pieces whose collider floor sits at terrain level 0.
+            float level0Y = terrain.GetTerrainLevelWorldY(0);
+            return Mathf.Abs(baseY - level0Y) < 0.1f;
+        }
 
         // Show host furniture whose female surfaces sit at the target WORLD height.
         foreach (FemaleGridLayer layer in auth.EnumerateFemaleLayers())
         {
-            float worldSY = t.position.y + auth.MaleGridFloorLocalY + layer.LocalHeight;
+            float worldSY = baseY + layer.LocalHeight;
             if (Mathf.Abs(worldSY - targetHeight) < 0.01f) return true;
         }
+
+        // Show pieces whose collider floor matches this layer's height (sitting on terrain or surface at this Y).
+        if (Mathf.Abs(baseY - targetHeight) < 0.1f) return true;
 
         // Also show pieces that are physically sitting on the surface at this world height.
         float worldSurfaceY = GetSurfaceWorldY();
         if (!float.IsNaN(worldSurfaceY))
         {
-            float baseY = t.position.y + auth.MaleGridFloorLocalY;
             if (Mathf.Abs(baseY - worldSurfaceY) < 0.1f) return true;
         }
 
@@ -1204,9 +1351,12 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
         float targetHeight    = CurrentLayerHeight;
         float worldSurfaceY   = GetSurfaceWorldY();
         bool  onNonFloorLayer = currentLayerIndex > 0 && !float.IsNaN(worldSurfaceY);
+        int playerFloorLevel = terrain.GetTileLevel(lastPlayerFullTile.x, lastPlayerFullTile.y);
+        float playerFloorWorldY = terrain.GetTerrainLevelWorldY(playerFloorLevel);
 
         PlacedFurnitureRecord hostHit    = null;
         float                 lowestBaseY = float.MaxValue;
+        float                 bestFloorDist = float.MaxValue;
 
         foreach (PlacedFurnitureRecord record in placedFurniture)
         {
@@ -1245,11 +1395,14 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
             }
             else
             {
-                // Floor layer: among all overlapping pieces, pick the one sitting lowest
-                // (closest to the terrain). This prevents elevated stacked pieces from
-                // stealing clicks that should go to the floor-level piece beneath them.
-                if (baseY < lowestBaseY)
+                // Floor layer: prefer the piece whose base sits closest to the player's
+                // current terrain level. This keeps interactions on elevated terrain from
+                // accidentally selecting furniture on lower levels that share XZ.
+                float floorDist = Mathf.Abs(baseY - playerFloorWorldY);
+                if (floorDist < bestFloorDist - 0.001f ||
+                    (Mathf.Abs(floorDist - bestFloorDist) < 0.001f && baseY < lowestBaseY))
                 {
+                    bestFloorDist = floorDist;
                     lowestBaseY = baseY;
                     hostHit = record;
                 }
@@ -1313,5 +1466,15 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
         for (int sz = 0; sz < s; sz++)
             for (int sx = 0; sx < s; sx++)
                 FillCellPixels(pft.x * s + sx, pft.y * s + sz, PlayerMarkerColor);
+    }
+
+    private void OnGUI()
+    {
+        if (!isDragging || string.IsNullOrEmpty(debugDragStatus)) return;
+
+        GUI.color = new Color(0f, 0f, 0f, 0.8f);
+        GUI.Box(new Rect(16f, 16f, 900f, 50f), GUIContent.none);
+        GUI.color = Color.white;
+        GUI.Label(new Rect(24f, 24f, 884f, 34f), debugDragStatus);
     }
 }
