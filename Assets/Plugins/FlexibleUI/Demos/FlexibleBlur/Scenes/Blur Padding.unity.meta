@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 534b19ff471204f43986b81b5e625aab
+DefaultImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 338646
+  packageName: Flexible UI Suite - Procedural UI, UI Blur, And More!
+  packageVersion: Image 2.4.3 + Blur 1.2.1
+  assetPath: Assets/Plugins/FlexibleUI/Demos/FlexibleBlur/Scenes/Blur Padding.unity
+  uploadId: 885100

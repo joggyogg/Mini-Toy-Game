@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 76256e05332b09c4a9314c0c0d4b32a1
+DefaultImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 338646
+  packageName: Flexible UI Suite - Procedural UI, UI Blur, And More!
+  packageVersion: Image 2.4.3 + Blur 1.2.1
+  assetPath: Assets/Plugins/FlexibleUI/Demos/FlexibleBlur/Scenes/Masked Blur.unity
+  uploadId: 885100

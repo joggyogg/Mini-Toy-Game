@@ -38,11 +38,12 @@ public class TerrainGridAuthoringWindow : EditorWindow
     private Vector2Int lastPaintedCell = new Vector2Int(int.MinValue, int.MinValue);
 
     // WFC generation state
-    private bool generationFoldout = true;
     private TerrainWFCConfig wfcConfig = TerrainWFCConfig.Default;
+    private bool[] layerFoldouts = new bool[0];
+    private Vector2 layersScrollPosition = Vector2.zero;
 
-    // Tile matrix foldout (defaults closed for performance on large grids).
-    private bool tileMatrixFoldout = false;
+    // Tab selection (0 = Tile Editing, 1 = Terrain Generation)
+    private int selectedTab = 0;
 
     // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -84,14 +85,26 @@ public class TerrainGridAuthoringWindow : EditorWindow
             return;
         }
 
-        EditorGUILayout.BeginHorizontal();
-        DrawLeftPanel();
-        tileMatrixFoldout = EditorGUILayout.Foldout(tileMatrixFoldout, "Tile Matrix", true, EditorStyles.foldoutHeader);
-        if (tileMatrixFoldout)
-        {
-            DrawRightPanel();
-        }
+        // Tab buttons
+        EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+        selectedTab = GUILayout.Toolbar(selectedTab, new[] { "Tile Editing", "Terrain Generation" }, EditorStyles.toolbarButton);
         EditorGUILayout.EndHorizontal();
+
+        if (selectedTab == 0)
+        {
+            // Tab 0: Tile Editing
+            EditorGUILayout.BeginHorizontal();
+            DrawTileEditingPanel();
+            DrawRightPanel();
+            EditorGUILayout.EndHorizontal();
+        }
+        else if (selectedTab == 1)
+        {
+            // Tab 1: Terrain Generation
+            EditorGUILayout.BeginVertical();
+            DrawTerrainGenerationPanel();
+            EditorGUILayout.EndVertical();
+        }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────────
@@ -131,9 +144,9 @@ public class TerrainGridAuthoringWindow : EditorWindow
         EditorGUILayout.EndHorizontal();
     }
 
-    // ── Left panel ────────────────────────────────────────────────────────────────
+    // ── Tile Editing Panel ────────────────────────────────────────────────────────
 
-    private void DrawLeftPanel()
+    private void DrawTileEditingPanel()
     {
         EditorGUILayout.BeginVertical(GUILayout.Width(LeftPanelWidth));
 
@@ -177,48 +190,111 @@ public class TerrainGridAuthoringWindow : EditorWindow
             "Pink/orange cells = enabled subtiles.\nLeft-click or drag to toggle cells.\nGreen overlay shows walkable 1\u00d71 tiles in the scene.",
             MessageType.None);
 
-        // ── WFC Terrain Generation ────────────────────────────────────────────
-        EditorGUILayout.Space(12);
-        generationFoldout = EditorGUILayout.Foldout(generationFoldout, "Terrain Generation (WFC)", true, EditorStyles.foldoutHeader);
-        if (generationFoldout)
+        EditorGUILayout.EndVertical();
+    }
+
+    // ── Terrain Generation Panel ──────────────────────────────────────────────────
+
+    private void DrawTerrainGenerationPanel()
+    {
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+
+        EditorGUILayout.LabelField("Terrain Generation (WFC)", EditorStyles.boldLabel);
+        EditorGUILayout.Space(4);
+
+        // Show discovered child terrains as a read-only info line.
+        Terrain[] childTerrains = targetAuthoring.GetComponentsInChildren<Terrain>();
+        string terrainInfo = childTerrains.Length == 0
+            ? "None found (add Terrain children)"
+            : $"{childTerrains.Length} child terrain(s)";
+        EditorGUILayout.LabelField("Child Terrains", terrainInfo);
+
+        EditorGUILayout.Space(4);
+        wfcConfig.seed = EditorGUILayout.IntField("Seed", wfcConfig.seed);
+
+        EditorGUILayout.Space(8);
+        wfcConfig.heightBuffer = EditorGUILayout.IntField("Height Buffer (Tiles)", wfcConfig.heightBuffer);
+        EditorGUILayout.HelpBox("Lowest terrain point will be offset to this height. Set to 2 for 1 tile above ground.", MessageType.Info);
+
+        EditorGUILayout.Space(8);
+        EditorGUILayout.LabelField("Noise Layers", EditorStyles.boldLabel);
+        EditorGUILayout.HelpBox(
+            "Combine multiple noise layers with different scales:\n" +
+            "• Large scale (0.01-0.05) + high contribution = big smooth hills\n" +
+            "• Small scale (0.1-0.3) + low contribution = fine terrain details",
+            MessageType.None);
+
+        // Ensure foldout array size matches layer count
+        if (wfcConfig.noiseLayers == null || wfcConfig.noiseLayers.Length == 0)
         {
-            EditorGUI.indentLevel++;
+            wfcConfig.noiseLayers = new[] { NoiseLayer.Default };
+        }
+        if (layerFoldouts.Length != wfcConfig.noiseLayers.Length)
+        {
+            System.Array.Resize(ref layerFoldouts, wfcConfig.noiseLayers.Length);
+        }
 
-            // Show discovered child terrains as a read-only info line.
-            Terrain[] childTerrains = targetAuthoring.GetComponentsInChildren<Terrain>();
-            string terrainInfo = childTerrains.Length == 0
-                ? "None found (add Terrain children)"
-                : $"{childTerrains.Length} child terrain(s)";
-            EditorGUILayout.LabelField("Child Terrains", terrainInfo);
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+        
+        // Scrollable noise layers section
+        layersScrollPosition = EditorGUILayout.BeginScrollView(layersScrollPosition, GUILayout.Height(250));
+        
+        // Draw each layer
+        for (int i = 0; i < wfcConfig.noiseLayers.Length; i++)
+        {
+            DrawNoiseLayer(ref wfcConfig.noiseLayers[i], i);
+        }
+        
+        EditorGUILayout.EndScrollView();
 
-            wfcConfig.perlinScale = EditorGUILayout.FloatField("Perlin Scale", wfcConfig.perlinScale);
-            wfcConfig.octaves     = EditorGUILayout.IntSlider("Octaves", wfcConfig.octaves, 1, 8);
-            wfcConfig.persistence = EditorGUILayout.Slider("Persistence", wfcConfig.persistence, 0f, 1f);
-            wfcConfig.lacunarity  = EditorGUILayout.FloatField("Lacunarity", wfcConfig.lacunarity);
-            wfcConfig.amplitude   = EditorGUILayout.IntField("Max Height Level", wfcConfig.amplitude);
-            wfcConfig.seed        = EditorGUILayout.IntField("Seed", wfcConfig.seed);
+        EditorGUILayout.Space(4);
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Button("Add Layer"))
+        {
+            AddNoiseLayer();
+        }
+        if (GUILayout.Button("Remove Last") && wfcConfig.noiseLayers.Length > 1)
+        {
+            RemoveLastNoiseLayer();
+        }
+        EditorGUILayout.EndHorizontal();
 
-            EditorGUILayout.Space(4);
-            if (GUILayout.Button("Generate Terrain"))
-            {
-                RecordChange("Generate WFC Terrain");
-                TerrainWFCGenerator.Generate(targetAuthoring, wfcConfig, childTerrains);
-                MarkDirty();
-            }
-            if (GUILayout.Button("Randomise Seed & Generate"))
-            {
-                wfcConfig.seed = Random.Range(0, 99999);
-                RecordChange("Generate WFC Terrain (Random)");
-                TerrainWFCGenerator.Generate(targetAuthoring, wfcConfig, childTerrains);
-                MarkDirty();
-            }
-            if (GUILayout.Button("Clear Terrain"))
-            {
-                RecordChange("Clear WFC Terrain");
-                TerrainWFCGenerator.Clear(targetAuthoring, childTerrains);
-                MarkDirty();
-            }
-            EditorGUI.indentLevel--;
+        EditorGUILayout.Space(4);
+        EditorGUILayout.LabelField("Presets", EditorStyles.boldLabel);
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Button("Simple"))
+        {
+            wfcConfig = TerrainWFCConfig.Default;
+            System.Array.Resize(ref layerFoldouts, wfcConfig.noiseLayers.Length);
+        }
+        if (GUILayout.Button("Hills + Details"))
+        {
+            wfcConfig = TerrainWFCConfig.HillsWithDetails;
+            System.Array.Resize(ref layerFoldouts, wfcConfig.noiseLayers.Length);
+        }
+        EditorGUILayout.EndHorizontal();
+
+        EditorGUILayout.EndVertical();
+
+        EditorGUILayout.Space(4);
+        if (GUILayout.Button("Generate Terrain"))
+        {
+            RecordChange("Generate WFC Terrain");
+            TerrainWFCGenerator.Generate(targetAuthoring, wfcConfig, childTerrains);
+            MarkDirty();
+        }
+        if (GUILayout.Button("Randomise Seed & Generate"))
+        {
+            wfcConfig.seed = Random.Range(0, 99999);
+            RecordChange("Generate WFC Terrain (Random)");
+            TerrainWFCGenerator.Generate(targetAuthoring, wfcConfig, childTerrains);
+            MarkDirty();
+        }
+        if (GUILayout.Button("Clear Terrain"))
+        {
+            RecordChange("Clear WFC Terrain");
+            TerrainWFCGenerator.Clear(targetAuthoring, childTerrains);
+            MarkDirty();
         }
 
         EditorGUILayout.EndVertical();
@@ -446,5 +522,64 @@ public class TerrainGridAuthoringWindow : EditorWindow
         targetAuthoring.EnsureValidData();
         EditorUtility.SetDirty(targetAuthoring);
         Repaint();
+    }
+
+    // ── Noise layer UI ────────────────────────────────────────────────────────────
+
+    private void DrawNoiseLayer(ref NoiseLayer layer, int index)
+    {
+        GUILayout.BeginVertical(EditorStyles.helpBox);
+
+        // Layer foldout header
+        layerFoldouts[index] = EditorGUILayout.Foldout(
+            layerFoldouts[index],
+            $"Layer {index + 1}: Scale {layer.perlinScale:F3}, Height {layer.heightContribution}",
+            true);
+
+        if (layerFoldouts[index])
+        {
+            EditorGUI.indentLevel++;
+
+            layer.perlinScale = EditorGUILayout.FloatField(
+                new GUIContent("Perlin Scale", "Lower = larger features (0.01 for huge hills, 0.2 for fine details)"),
+                layer.perlinScale);
+
+            layer.heightContribution = EditorGUILayout.IntField(
+                new GUIContent("Height Contribution", "How much this layer adds to final terrain height"),
+                layer.heightContribution);
+
+            layer.octaves = EditorGUILayout.IntSlider(
+                new GUIContent("Octaves", "Number of noise octaves for fractal detail within layer"),
+                layer.octaves, 1, 8);
+
+            layer.persistence = EditorGUILayout.Slider(
+                new GUIContent("Persistence", "Amplitude decay factor between octaves"),
+                layer.persistence, 0f, 1f);
+
+            layer.lacunarity = EditorGUILayout.FloatField(
+                new GUIContent("Lacunarity", "Frequency growth factor between octaves"),
+                layer.lacunarity);
+
+            EditorGUI.indentLevel--;
+        }
+
+        GUILayout.EndVertical();
+    }
+
+    private void AddNoiseLayer()
+    {
+        RecordChange("Add Noise Layer");
+        System.Array.Resize(ref wfcConfig.noiseLayers, wfcConfig.noiseLayers.Length + 1);
+        wfcConfig.noiseLayers[wfcConfig.noiseLayers.Length - 1] = NoiseLayer.FineDetails;
+        System.Array.Resize(ref layerFoldouts, wfcConfig.noiseLayers.Length);
+        MarkDirty();
+    }
+
+    private void RemoveLastNoiseLayer()
+    {
+        RecordChange("Remove Noise Layer");
+        System.Array.Resize(ref wfcConfig.noiseLayers, wfcConfig.noiseLayers.Length - 1);
+        System.Array.Resize(ref layerFoldouts, wfcConfig.noiseLayers.Length);
+        MarkDirty();
     }
 }
