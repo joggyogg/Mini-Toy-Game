@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 /// <summary>
@@ -129,11 +130,13 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
     /// </summary>
     private void TryNudgeDragging()
     {
+        if (Keyboard.current == null) return;
+
         Vector2Int nudge = Vector2Int.zero;
-        if      (Input.GetKeyDown(KeyCode.UpArrow))    nudge = new Vector2Int( 0,  1);
-        else if (Input.GetKeyDown(KeyCode.DownArrow))  nudge = new Vector2Int( 0, -1);
-        else if (Input.GetKeyDown(KeyCode.LeftArrow))  nudge = new Vector2Int(-1,  0);
-        else if (Input.GetKeyDown(KeyCode.RightArrow)) nudge = new Vector2Int( 1,  0);
+        if      (Keyboard.current.upArrowKey.wasPressedThisFrame)    nudge = new Vector2Int( 0,  1);
+        else if (Keyboard.current.downArrowKey.wasPressedThisFrame)  nudge = new Vector2Int( 0, -1);
+        else if (Keyboard.current.leftArrowKey.wasPressedThisFrame)  nudge = new Vector2Int(-1,  0);
+        else if (Keyboard.current.rightArrowKey.wasPressedThisFrame) nudge = new Vector2Int( 1,  0);
         if (nudge == Vector2Int.zero) return;
 
         PlaceableGridAuthoring auth = dragging.Instance;
@@ -492,7 +495,7 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
     private bool IsSittingOnFurniture(PlacedFurnitureRecord piece)
     {
         PlaceableGridAuthoring auth = piece.Instance;
-        if (auth == null) return false;
+        if (auth == null) return false;        
         float baseY = auth.transform.position.y + auth.MaleGridFloorLocalY;
 
         // Get one male cell of this piece for XZ overlap testing.
@@ -799,20 +802,10 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
                 child.Instance.transform.position += delta;
     }
 
-    // World-to-cell projection can land on an adjacent cell near boundaries due to float precision.
-    // Treat immediate neighbours as equivalent when matching support relationships.
+    // Support relationships are strict: a male cell must land on the exact support cell.
     private static bool ContainsCellOrNeighbor(HashSet<Vector2Int> cells, Vector2Int tc)
     {
-        if (cells.Contains(tc)) return true;
-        if (cells.Contains(new Vector2Int(tc.x + 1, tc.y))) return true;
-        if (cells.Contains(new Vector2Int(tc.x - 1, tc.y))) return true;
-        if (cells.Contains(new Vector2Int(tc.x, tc.y + 1))) return true;
-        if (cells.Contains(new Vector2Int(tc.x, tc.y - 1))) return true;
-        if (cells.Contains(new Vector2Int(tc.x + 1, tc.y + 1))) return true;
-        if (cells.Contains(new Vector2Int(tc.x + 1, tc.y - 1))) return true;
-        if (cells.Contains(new Vector2Int(tc.x - 1, tc.y + 1))) return true;
-        if (cells.Contains(new Vector2Int(tc.x - 1, tc.y - 1))) return true;
-        return false;
+        return cells.Contains(tc);
     }
 
     /// <summary>

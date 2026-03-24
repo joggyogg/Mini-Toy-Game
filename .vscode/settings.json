@@ -67,5 +67,5 @@
         "*.sln": "*.csproj",
         "*.slnx": "*.csproj"
     },
-    "dotnet.defaultSolution": "Mini Toy Game.slnx"
+    "dotnet.defaultSolution": "Mini-Toy-Game.slnx"
 }

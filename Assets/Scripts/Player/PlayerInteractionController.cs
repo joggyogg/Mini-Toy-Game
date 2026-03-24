@@ -200,8 +200,14 @@ public class PlayerInteractionController : MonoBehaviour
             return Mouse.current.leftButton.wasPressedThisFrame;
         }
 
-        screenPosition = UnityEngine.Input.mousePosition;
-        return UnityEngine.Input.GetMouseButtonDown(0);
+        if (Touchscreen.current != null)
+        {
+            screenPosition = Touchscreen.current.primaryTouch.position.ReadValue();
+            return Touchscreen.current.primaryTouch.press.wasPressedThisFrame;
+        }
+
+        screenPosition = Vector2.zero;
+        return false;
     }
 
     private bool WasMenuTogglePressedThisFrame()
@@ -214,39 +220,19 @@ public class PlayerInteractionController : MonoBehaviour
             {
                 return true;
             }
-
-            if (Keyboard.current == null)
-            {
-                return WasLegacyMenuTogglePressedThisFrame();
-            }
-
-            return false;
         }
 
-        if (Keyboard.current != null)
-        {
-            return Keyboard.current[fallbackMenuToggleKey].wasPressedThisFrame;
-        }
-
-        return WasLegacyMenuTogglePressedThisFrame();
+        return WasFallbackMenuTogglePressedThisFrame();
     }
 
-    private bool WasLegacyMenuTogglePressedThisFrame()
+    private bool WasFallbackMenuTogglePressedThisFrame()
     {
-        // This keeps the player menu usable when the new Input System keyboard device is unavailable.
-        switch (fallbackMenuToggleKey)
+        if (Keyboard.current != null && Keyboard.current[fallbackMenuToggleKey].wasPressedThisFrame)
         {
-            case Key.Tab:
-                return UnityEngine.Input.GetKeyDown(KeyCode.Tab);
-            case Key.Escape:
-                return UnityEngine.Input.GetKeyDown(KeyCode.Escape);
-            case Key.Space:
-                return UnityEngine.Input.GetKeyDown(KeyCode.Space);
-            case Key.Enter:
-                return UnityEngine.Input.GetKeyDown(KeyCode.Return);
-            default:
-                return false;
+            return true;
         }
+
+        return Gamepad.current != null && Gamepad.current.startButton.wasPressedThisFrame;
     }
 
     private void ApplyMenuState(bool shouldOpen, bool force)
