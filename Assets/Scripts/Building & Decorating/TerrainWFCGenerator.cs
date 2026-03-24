@@ -161,20 +161,36 @@ public static class TerrainWFCGenerator
         // eliminating single-corner spike pyramids.
         RemoveIsolatedPeaks(heights, w, h);
 
-        // ── Step 2c: Normalize heights so lowest point sits at heightBuffer ────
-        // Find the minimum height, then offset all heights so the minimum becomes heightBuffer.
+        // ── Step 2c: Compute tile coverage from terrain objects ───────────
+        // A tile is "covered" when its center lies within at least one Terrain.
+        Vector2Int ftSize = grid.FullTileGridSize;
+        bool[,] tileCovered = ComputeTileCoverage(grid, terrains, ftSize);
+
+        // ── Step 2d: Normalize heights so lowest point sits at heightBuffer ────
+        // Only consider corners that do NOT border a void; void-border corners
+        // will be forced to 0 afterwards so they must not influence the offset.
         int minHeight = int.MaxValue;
         for (int cz = 0; cz < h; cz++)
             for (int cx = 0; cx < w; cx++)
-                minHeight = Mathf.Min(minHeight, heights[cx, cz]);
+                if (!IsCornerBorderingVoid(cx, cz, ftSize, tileCovered))
+                    minHeight = Mathf.Min(minHeight, heights[cx, cz]);
 
-        if (minHeight != int.MaxValue && minHeight > config.heightBuffer)
+        if (minHeight != int.MaxValue && minHeight != config.heightBuffer)
         {
             int offsetToApply = minHeight - config.heightBuffer;
             for (int cz = 0; cz < h; cz++)
                 for (int cx = 0; cx < w; cx++)
                     heights[cx, cz] -= offsetToApply;
         }
+
+        // ── Step 2e: Enclose terrain — set void-border vertices to height 0 ──
+        // Any corner that touches at least one void tile (out of bounds or
+        // uncovered by a Terrain object) is forced to 0 so the terrain drops
+        // to the floor at outer edges AND inner void boundaries.
+        for (int cz = 0; cz < h; cz++)
+            for (int cx = 0; cx < w; cx++)
+                if (IsCornerBorderingVoid(cx, cz, ftSize, tileCovered))
+                    heights[cx, cz] = 0;
 
         // ── Step 3: Write to grid ────────────────────────────────────────────
         for (int cz = 0; cz < h; cz++)
@@ -306,5 +322,68 @@ public static class TerrainWFCGenerator
         }
 
         return Mathf.Clamp01(total / maxValue);
+    }
+
+    // ── Tile coverage helpers ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Builds a bool grid marking which full tiles are physically covered by at
+    /// least one Terrain object. If no terrains are provided, all tiles are
+    /// assumed covered (falls back to grid-boundary-only enclosure).
+    /// </summary>
+    private static bool[,] ComputeTileCoverage(TerrainGridAuthoring grid, Terrain[] terrains, Vector2Int ftSize)
+    {
+        bool[,] covered = new bool[ftSize.x, ftSize.y];
+
+        if (terrains == null || terrains.Length == 0)
+        {
+            // No terrain info → treat every tile as covered.
+            for (int tz = 0; tz < ftSize.y; tz++)
+                for (int tx = 0; tx < ftSize.x; tx++)
+                    covered[tx, tz] = true;
+            return covered;
+        }
+
+        for (int tz = 0; tz < ftSize.y; tz++)
+        {
+            for (int tx = 0; tx < ftSize.x; tx++)
+            {
+                if (!grid.TryGetFullTileCenterWorld(tx, tz, out Vector3 center)) continue;
+                foreach (Terrain t in terrains)
+                {
+                    if (t == null || t.terrainData == null) continue;
+                    Vector3 tPos  = t.transform.position;
+                    Vector3 tSize = t.terrainData.size;
+                    if (center.x >= tPos.x && center.x <= tPos.x + tSize.x &&
+                        center.z >= tPos.z && center.z <= tPos.z + tSize.z)
+                    {
+                        covered[tx, tz] = true;
+                        break;
+                    }
+                }
+            }
+        }
+        return covered;
+    }
+
+    /// <summary>
+    /// Returns true when corner (cx, cz) has fewer than 4 covered adjacent tiles.
+    /// A corner touches tiles (cx-1,cz-1), (cx,cz-1), (cx-1,cz), (cx,cz).
+    /// </summary>
+    private static bool IsCornerBorderingVoid(int cx, int cz, Vector2Int ftSize, bool[,] tileCovered)
+    {
+        for (int dz = -1; dz <= 0; dz++)
+        {
+            for (int dx = -1; dx <= 0; dx++)
+            {
+                int tx = cx + dx;
+                int tz = cz + dz;
+                if (tx < 0 || tx >= ftSize.x || tz < 0 || tz >= ftSize.y)
+                    return true;
+                if (!tileCovered[tx, tz])
+                    return true;
+            }
+        }
+        return false;
     }
 }

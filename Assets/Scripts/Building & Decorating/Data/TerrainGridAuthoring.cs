@@ -457,6 +457,26 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
         enabledCells[flatIndex] = value;
     }
 
+    /// <summary>
+    /// Returns true if any raw subtile cell inside the full tile at (tx, tz) is enabled
+    /// in the enabledCells mask, without shape/slope filtering.
+    /// Used by TerrainWFCGenerator to snapshot which tiles have terrain before generation.
+    /// </summary>
+    public bool IsFullTileRawEnabled(int tx, int tz)
+    {
+        int s = SubtilesPerFullTile;
+        Vector2Int fullSize = FullTileGridSize;
+        if (tx < 0 || tx >= fullSize.x || tz < 0 || tz >= fullSize.y) return false;
+        for (int sz = 0; sz < s; sz++)
+            for (int sx = 0; sx < s; sx++)
+            {
+                int flatIndex = GetFlatIndex(tx * s + sx, tz * s + sz);
+                if (flatIndex >= 0 && flatIndex < enabledCells.Count && enabledCells[flatIndex])
+                    return true;
+            }
+        return false;
+    }
+
     // ── Terraform accessors (corner-height based) ──────────────────────────────
 
     /// <summary>Grid dimensions for the corner array: (FullTileGridSize.x + 1, FullTileGridSize.y + 1).</summary>

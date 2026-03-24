@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
@@ -15,6 +15,7 @@ public class TerrainGridAuthoringWindow : EditorWindow
 {
     // ── Layout constants ──────────────────────────────────────────────────────────
     private const float CellButtonSize = 26f;
+    private const float FullTileCellSize = 26f;   // pixel size per full tile in performance mode
     private const float FullTileWorldSize = 1f;
     private const float LeftPanelWidth = 220f;
 
@@ -24,13 +25,20 @@ public class TerrainGridAuthoringWindow : EditorWindow
     private static readonly Color FemaleSecondaryLight = new Color(1f, 0.79f, 0.46f, 0.95f);
     private static readonly Color FemaleSecondaryDark = new Color(1f, 0.63f, 0.0f, 0.95f);
     private static readonly Color InactiveCellColor = new Color(0.22f, 0.22f, 0.22f, 1f);
+    private static readonly Color PartialTileColor  = new Color(0.55f, 0.22f, 0.42f, 0.95f); // some-but-not-all subtiles enabled
     private static readonly Color GridLineColor = new Color(0f, 0f, 0f, 0.35f);
     private static readonly Color FullTileBorderColor = new Color(0f, 0f, 0f, 0.7f);
 
     // ── State ─────────────────────────────────────────────────────────────────────
     private TerrainGridAuthoring targetAuthoring;
     private bool snapToFullTile = false;
+    private bool performanceMode = false;  // draw full tiles instead of subtiles
     private Vector2 scrollPosition;
+
+    // Cached grid texture – rebuilt only when cell data changes (_textureDirty = true).
+    private Texture2D _gridTexture;
+    private bool _textureDirty = true;
+    private bool _lastTexPerf;
 
     // Drag-paint state
     private bool isDragPainting;
@@ -68,6 +76,15 @@ public class TerrainGridAuthoringWindow : EditorWindow
         if (authoring != null)
         {
             SetTarget(authoring);
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (_gridTexture != null)
+        {
+            DestroyImmediate(_gridTexture);
+            _gridTexture = null;
         }
     }
 
@@ -114,6 +131,7 @@ public class TerrainGridAuthoringWindow : EditorWindow
         if (targetAuthoring == authoring) return;
         StopDragPainting();
         targetAuthoring = authoring;
+        _textureDirty = true;
         Repaint();
     }
 
@@ -162,6 +180,7 @@ public class TerrainGridAuthoringWindow : EditorWindow
         EditorGUILayout.Space(8);
         EditorGUILayout.LabelField("Paint Options", EditorStyles.boldLabel);
         snapToFullTile = EditorGUILayout.Toggle(new GUIContent("Snap to full tile", "Paint entire 1\u00d71 full-tile blocks rather than individual subtile cells."), snapToFullTile);
+        performanceMode = EditorGUILayout.Toggle(new GUIContent("Performance Mode", "Render one cell per full tile instead of per subtile. Greatly reduces draw calls on large grids."), performanceMode);
 
         EditorGUILayout.Space(4);
         if (GUILayout.Button("Fill All"))
@@ -187,7 +206,9 @@ public class TerrainGridAuthoringWindow : EditorWindow
 
         EditorGUILayout.Space(8);
         EditorGUILayout.HelpBox(
-            "Pink/orange cells = enabled subtiles.\nLeft-click or drag to toggle cells.\nGreen overlay shows walkable 1\u00d71 tiles in the scene.",
+            performanceMode
+                ? "Performance Mode: one cell = one full tile.\nPink/orange = fully enabled, purple = partial, dark = disabled.\nLeft-click or drag to toggle full tiles."
+                : "Pink/orange cells = enabled subtiles.\nLeft-click or drag to toggle cells.\nGreen overlay shows walkable 1\u00d71 tiles in the scene.",
             MessageType.None);
 
         EditorGUILayout.EndVertical();
@@ -307,71 +328,210 @@ public class TerrainGridAuthoringWindow : EditorWindow
         EditorGUILayout.BeginVertical();
         scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition);
 
-        Vector2Int gridSize = targetAuthoring.GridSizeInCells;
-        float pixelW = gridSize.x * CellButtonSize;
-        float pixelH = gridSize.y * CellButtonSize;
-
-        Rect gridRect = GUILayoutUtility.GetRect(pixelW, pixelH, GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
-
-        if (Event.current.type != EventType.Layout)
+        if (performanceMode)
         {
-            DrawGridCells(gridRect, gridSize);
-            DrawFullTileLines(gridRect, gridSize);
-            HandlePaintInput(gridRect, gridSize);
+            Vector2Int ftSize = targetAuthoring.FullTileGridSize;
+            float pixelW = ftSize.x * FullTileCellSize;
+            float pixelH = ftSize.y * FullTileCellSize;
+            Rect gridRect = GUILayoutUtility.GetRect(pixelW, pixelH, GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
+            if (Event.current.type != EventType.Layout)
+            {
+                if (Event.current.type == EventType.Repaint)
+                {
+                    EnsureGridTexture(ftSize, true);
+                    GUI.DrawTexture(gridRect, _gridTexture, ScaleMode.StretchToFill, false);
+                    DrawTileSeparators(gridRect, ftSize.x, ftSize.y, FullTileCellSize, FullTileCellSize);
+                }
+                HandlePaintInputPerf(gridRect, ftSize);
+            }
+        }
+        else
+        {
+            Vector2Int gridSize = targetAuthoring.GridSizeInCells;
+            float pixelW = gridSize.x * CellButtonSize;
+            float pixelH = gridSize.y * CellButtonSize;
+            Rect gridRect = GUILayoutUtility.GetRect(pixelW, pixelH, GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
+            if (Event.current.type != EventType.Layout)
+            {
+                if (Event.current.type == EventType.Repaint)
+                {
+                    EnsureGridTexture(gridSize, false);
+                    GUI.DrawTexture(gridRect, _gridTexture, ScaleMode.StretchToFill, false);
+                    int s = targetAuthoring.SubtilesPerFullTile;
+                    if (s > 1)
+                    {
+                        Vector2Int ftSize = targetAuthoring.FullTileGridSize;
+                        DrawTileSeparators(gridRect, ftSize.x, ftSize.y, s * CellButtonSize, s * CellButtonSize);
+                    }
+                }
+                HandlePaintInput(gridRect, gridSize);
+            }
         }
 
         EditorGUILayout.EndScrollView();
         EditorGUILayout.EndVertical();
     }
 
-    // ── Cell drawing ──────────────────────────────────────────────────────────────
+    // ── Texture-based rendering (one GPU draw call for the whole grid) ─────────────
 
-    private void DrawGridCells(Rect gridRect, Vector2Int gridSize)
+    private void EnsureGridTexture(Vector2Int texSize, bool perfMode)
     {
-        int s = targetAuthoring.SubtilesPerFullTile;
+        bool sizeOk = _gridTexture != null
+                   && _gridTexture.width  == texSize.x
+                   && _gridTexture.height == texSize.y;
 
-        for (int z = 0; z < gridSize.y; z++)
+        if (!sizeOk || _textureDirty || _lastTexPerf != perfMode)
         {
-            for (int x = 0; x < gridSize.x; x++)
+            if (!sizeOk)
             {
-                Rect cellRect = GetCellRect(gridRect, gridSize, x, z);
-                bool enabled = targetAuthoring.GetCell(x, z);
+                if (_gridTexture != null) DestroyImmediate(_gridTexture);
+                _gridTexture = new Texture2D(texSize.x, texSize.y, TextureFormat.RGBA32, false);
+                _gridTexture.filterMode = FilterMode.Point;
+                _gridTexture.wrapMode   = TextureWrapMode.Clamp;
+            }
 
-                Color fillColor = enabled ? GetCellColor(x, z, s) : InactiveCellColor;
-                EditorGUI.DrawRect(cellRect, fillColor);
+            var pixels = new Color32[texSize.x * texSize.y];
+            if (perfMode) FillTexturePerf(pixels, texSize);
+            else          FillTextureSubtile(pixels, texSize);
+            _gridTexture.SetPixels32(pixels);
+            _gridTexture.Apply(false);
 
-                // Thin grid line around every subtile cell.
-                DrawCellBorder(cellRect, GridLineColor);
+            _textureDirty = false;
+            _lastTexPerf  = perfMode;
+        }
+    }
+
+    private void FillTexturePerf(Color32[] pixels, Vector2Int ftSize)
+    {
+        int s        = targetAuthoring.SubtilesPerFullTile;
+        int totalSub = s * s;
+        for (int fz = 0; fz < ftSize.y; fz++)
+        {
+            for (int fx = 0; fx < ftSize.x; fx++)
+            {
+                int baseX = fx * s, baseZ = fz * s, enabledSub = 0;
+                for (int sz = 0; sz < s; sz++)
+                    for (int sx = 0; sx < s; sx++)
+                        if (targetAuthoring.GetCell(baseX + sx, baseZ + sz))
+                            enabledSub++;
+
+                Color c = enabledSub == totalSub ? GetFullTileColor(fx, fz)
+                        : enabledSub == 0        ? InactiveCellColor
+                        :                          (Color)PartialTileColor;
+                pixels[fz * ftSize.x + fx] = c;
             }
         }
     }
 
-    private void DrawFullTileLines(Rect gridRect, Vector2Int gridSize)
+    private void FillTextureSubtile(Color32[] pixels, Vector2Int gridSize)
     {
         int s = targetAuthoring.SubtilesPerFullTile;
-        if (s <= 1) return;
-
-        // Draw thicker horizontal and vertical separators at every full-tile boundary.
-        for (int x = s; x < gridSize.x; x += s)
+        for (int z = 0; z < gridSize.y; z++)
         {
-            float px = gridRect.xMin + x * CellButtonSize;
-            Rect lineRect = new Rect(px - 1f, gridRect.yMin, 2f, gridSize.y * CellButtonSize);
-            EditorGUI.DrawRect(lineRect, FullTileBorderColor);
-        }
-        for (int z = s; z < gridSize.y; z += s)
-        {
-            float py = gridRect.yMin + (gridSize.y - z) * CellButtonSize;
-            Rect lineRect = new Rect(gridRect.xMin, py - 1f, gridSize.x * CellButtonSize, 2f);
-            EditorGUI.DrawRect(lineRect, FullTileBorderColor);
+            for (int x = 0; x < gridSize.x; x++)
+            {
+                Color c = targetAuthoring.GetCell(x, z) ? GetCellColor(x, z, s) : InactiveCellColor;
+                pixels[z * gridSize.x + x] = c;
+            }
         }
     }
 
-    private static void DrawCellBorder(Rect r, Color color)
+    // Draws thick separator lines at every full-tile boundary (very few rects).
+    private static void DrawTileSeparators(Rect gridRect, int tileCountX, int tileCountY, float stepX, float stepY)
     {
-        EditorGUI.DrawRect(new Rect(r.xMin, r.yMin, r.width, 1f), color);
-        EditorGUI.DrawRect(new Rect(r.xMin, r.yMax - 1f, r.width, 1f), color);
-        EditorGUI.DrawRect(new Rect(r.xMin, r.yMin, 1f, r.height), color);
-        EditorGUI.DrawRect(new Rect(r.xMax - 1f, r.yMin, 1f, r.height), color);
+        for (int tx = 1; tx < tileCountX; tx++)
+        {
+            float px = gridRect.xMin + tx * stepX;
+            EditorGUI.DrawRect(new Rect(px - 1f, gridRect.yMin, 2f, gridRect.height), FullTileBorderColor);
+        }
+        for (int tz = 1; tz < tileCountY; tz++)
+        {
+            float py = gridRect.yMin + tz * stepY;
+            EditorGUI.DrawRect(new Rect(gridRect.xMin, py - 1f, gridRect.width, 2f), FullTileBorderColor);
+        }
+    }
+
+    private void HandlePaintInputPerf(Rect gridRect, Vector2Int fullTileSize)
+    {
+        Event e = Event.current;
+        int controlId = GUIUtility.GetControlID(FocusType.Passive);
+
+        switch (e.GetTypeForControl(controlId))
+        {
+            case EventType.MouseDown:
+                if (e.button == 0 && gridRect.Contains(e.mousePosition))
+                {
+                    if (TryGetFullTileAtPosition(e.mousePosition, gridRect, fullTileSize, out Vector2Int fullTile))
+                    {
+                        GUIUtility.hotControl = controlId;
+                        RecordChange("Paint Terrain Grid");
+                        int s = targetAuthoring.SubtilesPerFullTile;
+                        bool newValue = !targetAuthoring.GetCell(fullTile.x * s, fullTile.y * s);
+                        isDragPainting = true;
+                        dragPaintValue = newValue;
+                        lastPaintedCell = new Vector2Int(int.MinValue, int.MinValue);
+                        ApplyPaintFullTileDirect(fullTile);
+                        MarkDirty();
+                        e.Use();
+                    }
+                }
+                break;
+
+            case EventType.MouseDrag:
+                if (isDragPainting && e.button == 0)
+                {
+                    if (TryGetFullTileAtPosition(e.mousePosition, gridRect, fullTileSize, out Vector2Int dragTile))
+                    {
+                        if (dragTile != lastPaintedCell)
+                        {
+                            ApplyPaintFullTileDirect(dragTile);
+                            MarkDirty();
+                        }
+                    }
+                    e.Use();
+                }
+                break;
+
+            case EventType.MouseUp:
+                if (isDragPainting && e.button == 0)
+                {
+                    GUIUtility.hotControl = 0;
+                    StopDragPainting();
+                    e.Use();
+                }
+                break;
+        }
+    }
+
+    private void ApplyPaintFullTileDirect(Vector2Int fullTile)
+    {
+        if (fullTile == lastPaintedCell) return;
+        lastPaintedCell = fullTile;
+        int s = targetAuthoring.SubtilesPerFullTile;
+        int baseX = fullTile.x * s;
+        int baseZ = fullTile.y * s;
+        for (int sz = 0; sz < s; sz++)
+            for (int sx = 0; sx < s; sx++)
+                targetAuthoring.SetCell(baseX + sx, baseZ + sz, dragPaintValue);
+    }
+
+    private static bool TryGetFullTileAtPosition(Vector2 mousePos, Rect gridRect, Vector2Int fullTileSize, out Vector2Int fullTile)
+    {
+        fullTile = default;
+        if (!gridRect.Contains(mousePos)) return false;
+
+        int fxIndex = Mathf.FloorToInt((mousePos.x - gridRect.xMin) / FullTileCellSize);
+        int fzIndex = fullTileSize.y - 1 - Mathf.FloorToInt((mousePos.y - gridRect.yMin) / FullTileCellSize);
+
+        if (fxIndex < 0 || fxIndex >= fullTileSize.x || fzIndex < 0 || fzIndex >= fullTileSize.y) return false;
+
+        fullTile = new Vector2Int(fxIndex, fzIndex);
+        return true;
+    }
+
+    private static Color GetFullTileColor(int fx, int fz)
+    {
+        return ((fx + fz) & 1) == 0 ? FemalePrimaryLight : FemaleSecondaryLight;
     }
 
     private static Color GetCellColor(int x, int z, int subtilesPerFullTile)
@@ -482,14 +642,6 @@ public class TerrainGridAuthoringWindow : EditorWindow
 
     // ── Geometry ──────────────────────────────────────────────────────────────────
 
-    private static Rect GetCellRect(Rect gridRect, Vector2Int gridSize, int x, int z)
-    {
-        float px = gridRect.xMin + x * CellButtonSize;
-        // Z is rendered bottom-up so z=0 is at the bottom of the grid.
-        float py = gridRect.yMin + (gridSize.y - 1 - z) * CellButtonSize;
-        return new Rect(px, py, CellButtonSize, CellButtonSize);
-    }
-
     private static bool TryGetCellAtPosition(Vector2 mousePos, Rect gridRect, Vector2Int gridSize, out Vector2Int cell)
     {
         cell = default;
@@ -521,6 +673,7 @@ public class TerrainGridAuthoringWindow : EditorWindow
     {
         targetAuthoring.EnsureValidData();
         EditorUtility.SetDirty(targetAuthoring);
+        _textureDirty = true;
         Repaint();
     }
 
