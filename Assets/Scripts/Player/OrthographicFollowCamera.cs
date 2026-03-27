@@ -19,8 +19,8 @@ public class OrthographicFollowCamera : MonoBehaviour
 
     [Header("Follow")]
     [SerializeField] private Transform playerTarget;
-    [SerializeField] private float followDistance = 8f;
-    [SerializeField] private float followHeight = 8f;
+    [SerializeField] private float followDistance = 25f;
+    [SerializeField] private float followHeight = 25f;
     [SerializeField] private float positionSmoothTime = 0.12f;
 
     [Header("Rotation")]

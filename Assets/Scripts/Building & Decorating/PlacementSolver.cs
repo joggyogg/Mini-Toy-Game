@@ -17,23 +17,25 @@ public static class PlacementSolver
 {
     /// <summary>
     /// Tries to find a non-overlapping terrain cell origin for <paramref name="furniturePrefab"/>'s male grid,
-    /// starting from the full tile nearest to <paramref name="playerWorldPos"/>.
+    /// starting from the full tile nearest to <paramref name="searchOrigin"/>.
     /// </summary>
     /// <param name="terrain">The terrain grid that is the placement surface.</param>
-    /// <param name="playerWorldPos">World position used as the BFS search origin.</param>
+    /// <param name="searchOrigin">World position used as the BFS search origin (e.g. camera view centre hit).</param>
     /// <param name="furniturePrefab">Prefab whose male grid defines the required footprint.</param>
     /// <param name="existingPlacements">
     /// Optional list of already-placed objects whose terrain cells should be treated as occupied.
     /// Pass null to skip occupancy checks (useful before any furniture exists).
     /// </param>
+    /// <param name="viewCamera">If provided, only on-screen positions are considered.</param>
     /// <param name="result">The candidate placement when the method returns true.</param>
     /// <returns>True when a valid position was found.</returns>
     public static bool TryFindSpawnPosition(
         TerrainGridAuthoring terrain,
-        Vector3 playerWorldPos,
+        Vector3 searchOrigin,
         PlaceableGridAuthoring furniturePrefab,
         IReadOnlyList<PlacedFurnitureRecord> existingPlacements,
-        out PlacementCandidate result)
+        out PlacementCandidate result,
+        Camera viewCamera = null)
     {
         result = default;
 
@@ -49,16 +51,39 @@ public static class PlacementSolver
         // Build a set of currently-occupied terrain cells.
         HashSet<Vector2Int> occupied = BuildOccupancySet(terrain, existingPlacements);
 
-        // Find the starting full tile.
-        if (!terrain.TryGetNearestWalkableFullTile(playerWorldPos, out Vector2Int startFull)) return false;
-
+        // Convert the search origin directly to the nearest subtile cell.
+        // We intentionally avoid TryGetNearestWalkableFullTile because that can
+        // jump far from the camera centre when the centre tile isn't walkable.
         int s = terrain.SubtilesPerFullTile;
-        Vector2Int startCell = new Vector2Int(startFull.x * s, startFull.y * s);
         Vector2Int cellSize = terrain.GridSizeInCells;
-        int targetLevel = terrain.GetTileLevel(startFull.x, startFull.y);
+        Vector2Int startCell;
+        int targetLevel;
 
-        // BFS spiral.
-        int maxRadius = cellSize.x + cellSize.y;
+        if (terrain.TryWorldToCell(searchOrigin, out Vector2Int directCell))
+        {
+            startCell = directCell;
+            int ftx = directCell.x / s;
+            int ftz = directCell.y / s;
+            targetLevel = terrain.GetTileLevel(ftx, ftz);
+        }
+        else if (terrain.TryGetNearestWalkableFullTile(searchOrigin, out Vector2Int startFull))
+        {
+            startCell = new Vector2Int(startFull.x * s, startFull.y * s);
+            targetLevel = terrain.GetTileLevel(startFull.x, startFull.y);
+        }
+        else
+        {
+            return false;
+        }
+
+        // BFS spiral — capped to 100 full tiles (200 subtiles) around the search origin.
+        int maxRadius = Mathf.Min(100 * s, cellSize.x + cellSize.y);
+
+        // Pre-compute frustum planes when a view camera is supplied.
+        Plane[] frustumPlanes = viewCamera != null
+            ? GeometryUtility.CalculateFrustumPlanes(viewCamera)
+            : null;
+
         for (int radius = 0; radius <= maxRadius; radius++)
         {
             for (int dz = -radius; dz <= radius; dz++)
@@ -74,6 +99,13 @@ public static class PlacementSolver
                     if (FitsAtOrigin(terrain, maleShape, originX, originZ, occupied, targetLevel))
                     {
                         if (!terrain.TryGetCellCenterWorld(originX, originZ, out Vector3 cell00Center)) continue;
+
+                        // Skip positions that are off-screen.
+                        if (frustumPlanes != null)
+                        {
+                            Bounds cellBounds = new Bounds(cell00Center, Vector3.one * 0.5f);
+                            if (!GeometryUtility.TestPlanesAABB(frustumPlanes, cellBounds)) continue;
+                        }
 
                         // Place the pivot so that:
                         //   XZ: male cell (0,0) center aligns with terrain cell (originX, originZ) center.

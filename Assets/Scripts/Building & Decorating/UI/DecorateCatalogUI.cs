@@ -6,7 +6,7 @@ using UnityEngine.UI;
 /// <summary>
 /// Plain-English purpose:
 /// The in-game furniture catalog panel. Shows one button per FurnitureDefinition in the assigned catalog.
-/// When the player clicks an item the OnDefinitionSelected event fires and BuildModeController
+/// When the player clicks an item the OnDefinitionSelected event fires and FurnitureSpawner
 /// calls SpawnFurniture to place it near the player.
 ///
 /// Setup: Add this MonoBehaviour to the root of a UI canvas panel that contains a ScrollRect.
