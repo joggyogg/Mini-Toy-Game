@@ -29,6 +29,7 @@ public class PlayerMotor : MonoBehaviour
 
     [Header("Orientation")]
     [SerializeField] private Transform movementReference;
+    [SerializeField] private OrthographicFollowCamera orbitCamera;
 
     [Header("Input")]
     [SerializeField] private InputActionAsset inputActions;
@@ -57,6 +58,10 @@ public class PlayerMotor : MonoBehaviour
     private void Awake()
     {
         characterController = GetComponent<CharacterController>();
+        if (orbitCamera == null && movementReference != null)
+            orbitCamera = movementReference.GetComponent<OrthographicFollowCamera>();
+        if (orbitCamera == null)
+            orbitCamera = FindAnyObjectByType<OrthographicFollowCamera>();
         ResolveInputActions();
     }
 
@@ -74,6 +79,14 @@ public class PlayerMotor : MonoBehaviour
 
     private void Update()
     {
+        if (transform.position.y < -100f)
+        {
+            characterController.enabled = false;
+            transform.position = new Vector3(10f, 100f, 10f);
+            characterController.enabled = true;
+            velocity.y = 0f;
+        }
+
         ReadInput();
         if (inDecorateMode)
         {
@@ -182,7 +195,12 @@ public class PlayerMotor : MonoBehaviour
         Vector3 referenceForward;
         Vector3 referenceRight;
 
-        if (movementReference != null)
+        if (orbitCamera != null)
+        {
+            referenceForward = orbitCamera.PlanarForward;
+            referenceRight = new Vector3(referenceForward.z, 0f, -referenceForward.x);
+        }
+        else if (movementReference != null)
         {
             referenceForward = movementReference.forward;
             referenceRight = movementReference.right;

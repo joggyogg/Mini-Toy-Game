@@ -38,6 +38,8 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
     private static readonly Color32 SecondaryLightBase = new Color32(255, 201, 117, 255);
     private static readonly Color32 SecondaryDarkBase  = new Color32(255, 161, 0,   255);
     private static readonly Color32 DisabledColor      = new Color32(28,  28,  28,  255);
+    // Edge tiles (adjacent to void) are locked from painting — shown as a dark red-brown.
+    private static readonly Color32 EdgeLockedColor    = new Color32(80,  30,  30,  255);
     // Slope tiles are shown as a desaturated mid-gray tint.
     private static readonly Color32 SlopeOverlayColor  = new Color32(140, 130, 120, 220);
     // Player marker.
@@ -51,6 +53,8 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
 
     private Texture2D minimapTexture;
     private RawImage  rawImage;
+    private Color32[] pixelBuffer;
+    private int       textureDim;
 
     private Vector2Int viewOriginSubtile;
     private Vector2Int lastPlayerFullTile;
@@ -143,7 +147,8 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
         EnsureTexture();
         DrawTerrain();
         DrawPlayerMarker();
-        minimapTexture.Apply();
+        minimapTexture.SetPixels32(pixelBuffer);
+        minimapTexture.Apply(false);
         UpdateLayerLabel();
         UpdateLayerButtonStates();
         UpdateToolButtonVisuals();
@@ -279,6 +284,8 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
             minimapTexture = new Texture2D(dim, dim, TextureFormat.RGBA32, false);
             minimapTexture.filterMode = FilterMode.Point;
             rawImage.texture = minimapTexture;
+            textureDim  = dim;
+            pixelBuffer = new Color32[dim * dim];
         }
     }
 
@@ -319,6 +326,11 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
                     {
                         // Above the current viewing layer — blank.
                         color = DisabledColor;
+                    }
+                    else if (terrain.IsFullTileEdge(tileX, tileZ))
+                    {
+                        // Edge tile (adjacent to void): locked from painting.
+                        color = EdgeLockedColor;
                     }
                     else if (tileShape != TileShape.Flat)
                     {
@@ -387,7 +399,7 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
         int py = vz * pixelsPerCell;
         for (int dy = 0; dy < pixelsPerCell; dy++)
             for (int dx = 0; dx < pixelsPerCell; dx++)
-                minimapTexture.SetPixel(px + dx, py + dy, color);
+                pixelBuffer[(py + dy) * textureDim + (px + dx)] = color;
     }
 
     private void RefreshViewOrigin()
@@ -466,6 +478,9 @@ public class TerraformMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUp
     {
         if (controller == null || terrain == null) return;
         if (!TryScreenToFullTile(screenPos, out Vector2Int tile)) return;
+
+        // Edge tiles (adjacent to void) have WFC-enforced corners forced to 0 — never allow painting them.
+        if (terrain.IsFullTileEdge(tile.x, tile.y)) return;
 
         switch (activeTool)
         {

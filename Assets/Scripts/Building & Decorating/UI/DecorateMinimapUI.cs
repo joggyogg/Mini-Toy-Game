@@ -64,6 +64,11 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
     private Vector2Int viewOriginSubtile;   // subtile-space top-left of the visible window
     private Vector2Int lastPlayerFullTile;  // cached tile used to detect movement
 
+    // Pixel buffer — eliminates per-pixel SetPixel calls; written to on every Rebuild, then
+    // flushed to the GPU in one SetPixels32 call.
+    private Color32[] pixelBuffer;
+    private int       textureDim;
+
     // Drag state
     private PlacedFurnitureRecord dragging;
     private Vector2Int dragOffsetCells;      // click point relative to furniture origin in cell space
@@ -215,7 +220,8 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
         DrawSurfaceCells();      // overlay enabled/disabled female-grid cells when on a higher layer
         DrawFurniture();
         DrawPlayerMarker();
-        minimapTexture.Apply();
+        minimapTexture.SetPixels32(pixelBuffer);
+        minimapTexture.Apply(false);
 
         UpdateLayerLabel();
         UpdateLayerButtonStates();
@@ -908,6 +914,8 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
             minimapTexture = new Texture2D(dim, dim, TextureFormat.RGBA32, false);
             minimapTexture.filterMode = FilterMode.Point;
             rawImage.texture = minimapTexture;
+            textureDim  = dim;
+            pixelBuffer = new Color32[dim * dim];
         }
     }
 
@@ -1451,9 +1459,98 @@ public class DecorateMinimapUI : MonoBehaviour, IPointerDownHandler, IPointerUpH
         return hostHit;
     }
 
+    /// <summary>
+    /// Returns true if rotating 'record' 90° clockwise around Y would cause its male-grid footprint
+    /// to overlap with the male-grid footprint of any other placed furniture piece.
+    /// </summary>
+    private bool HasRotationOverlap(PlacedFurnitureRecord record)
+    {
+        if (record.Instance == null) return false;
+
+        PlaceableGridAuthoring auth = record.Instance;
+        Transform t = auth.transform;
+
+        // Simulate the post-rotation axes (90° clockwise around world Y).
+        Quaternion rot90 = Quaternion.AngleAxis(90f, Vector3.up);
+        Vector3 newRight   = rot90 * t.right;
+        Vector3 newForward = rot90 * t.forward;
+
+        // Determine the terrain level this furniture currently sits on.
+        int s = terrain.SubtilesPerFullTile;
+        Vector2Int originCell = record.Placement.TerrainCellOrigin;
+        int targetLevel = terrain.GetTileLevel(originCell.x / s, originCell.y / s);
+
+        // Compute the terrain cells the furniture would claim after rotation.
+        // Any cell that falls off the terrain, onto a disabled cell, or onto a
+        // different terrain level also blocks the rotation.
+        var rotatedCells = new HashSet<Vector2Int>();
+        Vector2Int maleSize   = auth.MaleGridSizeInCells;
+        Vector2   maleOffset  = auth.MaleGridOriginLocalOffset;
+        float     tileSize    = auth.FemaleTileSize;
+        float     recordBaseY = t.position.y + auth.MaleGridFloorLocalY;
+
+        for (int z = 0; z < maleSize.y; z++)
+        {
+            for (int x = 0; x < maleSize.x; x++)
+            {
+                if (!auth.GetMaleCell(x, z)) continue;
+                float lx = maleOffset.x + (x + 0.5f) * tileSize;
+                float lz = maleOffset.y + (z + 0.5f) * tileSize;
+                Vector3 worldCenter = t.position + newRight * lx + newForward * lz;
+
+                // Projected off the terrain entirely.
+                if (!terrain.TryWorldToCell(worldCenter, out Vector2Int tc)) return true;
+                // Cell is disabled (edge, void, etc.).
+                if (!terrain.GetCell(tc.x, tc.y)) return true;
+                // Cell is on a different terrain level.
+                int ftx = tc.x / s; int ftz = tc.y / s;
+                if (terrain.GetTileLevel(ftx, ftz) != targetLevel) return true;
+
+                rotatedCells.Add(tc);
+            }
+        }
+
+        if (rotatedCells.Count == 0) return false;
+
+        // Check every other placed piece for cell overlap.
+        // Pieces sitting on surfaces (elevated above this piece's floor Y) are skipped cheaply
+        // without calling GatherAllChildren — that BFS is too expensive for a click-time check.
+        const float elevatedThreshold = 0.15f;
+        foreach (PlacedFurnitureRecord other in placedFurniture)
+        {
+            if (other == record || other.Instance == null) continue;
+
+            // Skip pieces elevated above the floor level being checked (they sit on surfaces).
+            float otherBaseY = other.Instance.transform.position.y + other.Instance.MaleGridFloorLocalY;
+            if (otherBaseY > recordBaseY + elevatedThreshold) continue;
+
+            PlaceableGridAuthoring otherAuth   = other.Instance;
+            Transform              otherT      = otherAuth.transform;
+            Vector2Int             otherSize   = otherAuth.MaleGridSizeInCells;
+            Vector2                otherOffset = otherAuth.MaleGridOriginLocalOffset;
+            float                  otherTile   = otherAuth.FemaleTileSize;
+
+            for (int z = 0; z < otherSize.y; z++)
+            {
+                for (int x = 0; x < otherSize.x; x++)
+                {
+                    if (!otherAuth.GetMaleCell(x, z)) continue;
+                    float lx = otherOffset.x + (x + 0.5f) * otherTile;
+                    float lz = otherOffset.y + (z + 0.5f) * otherTile;
+                    Vector3 worldCenter = otherT.position + otherT.right * lx + otherT.forward * lz;
+                    if (terrain.TryWorldToCell(worldCenter, out Vector2Int tc) && rotatedCells.Contains(tc))
+                        return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private void RotateFurniture90(PlacedFurnitureRecord record)
     {
         if (record.Instance == null) return;
+        if (HasRotationOverlap(record)) return;
         Transform t = record.Instance.transform;
 
         // Capture each child's position in the host's local frame BEFORE rotation so it can be

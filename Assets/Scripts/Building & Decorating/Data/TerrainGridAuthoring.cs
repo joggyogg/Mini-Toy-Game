@@ -80,6 +80,12 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
     // Corner (cx, cz) sits at the SW corner of tile (cx, cz). The extra +1 row/col covers NE edges.
     [SerializeField] private int[] cornerHeights = new int[0];
 
+    // Row-major full-tile lock mask. True = the player may not terraform-paint this tile.
+    // Populated by TerrainWFCGenerator after generation to mark tiles adjacent to void
+    // (inner hole boundary + outer grid boundary). Outer boundary is also enforced at runtime
+    // by IsFullTileEdge regardless of this mask.
+    [SerializeField] private bool[] paintLockedTiles = new bool[0];
+
     // ── ISupportSurface ──────────────────────────────────────────────────────────
 
     public float FemaleTileSize => femaleTileSize;
@@ -217,6 +223,24 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
             int s = SubtilesPerFullTile;
             return new Vector2Int(gridSizeInCells.x / s, gridSizeInCells.y / s);
         }
+    }
+
+    /// <summary>
+    /// Returns true when tile (tx, tz) is an edge tile that must not be terraform-painted.
+    /// A tile is an edge tile if it sits on the outer grid boundary (always locked) or if it
+    /// was marked as paint-locked by the WFC generator (tiles adjacent to inner void holes).
+    /// </summary>
+    public bool IsFullTileEdge(int tx, int tz)
+    {
+        Vector2Int fullSize = FullTileGridSize;
+        if (tx < 0 || tx >= fullSize.x || tz < 0 || tz >= fullSize.y) return true;
+
+        // Outer grid boundary — any tile on the perimeter row/column is always locked.
+        if (tx == 0 || tx == fullSize.x - 1 || tz == 0 || tz == fullSize.y - 1) return true;
+
+        // Check the persistent lock mask (populated by TerrainWFCGenerator to cover inner void edges).
+        int idx = GetFullTileIndex(tx, tz);
+        return idx >= 0 && idx < paintLockedTiles.Length && paintLockedTiles[idx];
     }
 
     /// <summary>
@@ -376,6 +400,7 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
         gridSizeInCells.y = Mathf.Max(1, gridSizeInCells.y);
         ResizeEnabledCells();
         ResizeCornerData();
+        ResizePaintLockedTiles();
     }
 
     /// <summary>
@@ -849,6 +874,25 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
                 newHeights[i] = cornerHeights[i];
             cornerHeights = newHeights;
         }
+    }
+
+    private void ResizePaintLockedTiles()
+    {
+        Vector2Int fullSize = FullTileGridSize;
+        int required = fullSize.x * fullSize.y;
+        if (paintLockedTiles.Length != required)
+            paintLockedTiles = new bool[required];
+    }
+
+    /// <summary>
+    /// Marks a full tile as paint-locked (or unlocked). Called by TerrainWFCGenerator
+    /// after generation to lock tiles adjacent to void areas.
+    /// </summary>
+    public void SetTilePaintLocked(int tx, int tz, bool locked)
+    {
+        int idx = GetFullTileIndex(tx, tz);
+        if (idx >= 0 && idx < paintLockedTiles.Length)
+            paintLockedTiles[idx] = locked;
     }
 
     // ── Collider projection ──────────────────────────────────────────────────────

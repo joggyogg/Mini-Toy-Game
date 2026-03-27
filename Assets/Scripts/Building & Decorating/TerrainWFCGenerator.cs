@@ -166,6 +166,9 @@ public static class TerrainWFCGenerator
         Vector2Int ftSize = grid.FullTileGridSize;
         bool[,] tileCovered = ComputeTileCoverage(grid, terrains, ftSize);
 
+        // Mark tiles adjacent to void as paint-locked so the terraform tool can't override WFC corners.
+        MarkPaintLockedTiles(grid, tileCovered, ftSize);
+
         // ── Step 2d: Normalize heights so lowest point sits at heightBuffer ────
         // Only consider corners that do NOT border a void; void-border corners
         // will be forced to 0 afterwards so they must not influence the offset.
@@ -364,6 +367,33 @@ public static class TerrainWFCGenerator
             }
         }
         return covered;
+    }
+
+    /// <summary>
+    /// Marks tiles that are adjacent to a void (out-of-bounds or not covered by a Terrain) as
+    /// paint-locked on the grid. These are the tiles whose WFC-corners are forced to 0 and must
+    /// not be modified by the player.
+    /// </summary>
+    private static void MarkPaintLockedTiles(TerrainGridAuthoring grid, bool[,] tileCovered, Vector2Int ftSize)
+    {
+        int[] dx = { -1, 1,  0, 0 };
+        int[] dz = {  0, 0, -1, 1 };
+
+        for (int tz = 0; tz < ftSize.y; tz++)
+        {
+            for (int tx = 0; tx < ftSize.x; tx++)
+            {
+                bool edge = false;
+                for (int i = 0; i < 4; i++)
+                {
+                    int nx = tx + dx[i];
+                    int nz = tz + dz[i];
+                    if (nx < 0 || nx >= ftSize.x || nz < 0 || nz >= ftSize.y) { edge = true; break; }
+                    if (!tileCovered[nx, nz]) { edge = true; break; }
+                }
+                grid.SetTilePaintLocked(tx, tz, edge);
+            }
+        }
     }
 
     /// <summary>
