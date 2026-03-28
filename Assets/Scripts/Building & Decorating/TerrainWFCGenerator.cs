@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -70,19 +71,21 @@ public struct TerrainWFCConfig
     [Tooltip("Height buffer: the lowest terrain point will be offset to this height (in tiles). Higher = terrain floats higher. Set to 2 for 1 tile above ground.")]
     public int heightBuffer;
 
+    [Tooltip("Number of smoothing passes after WFC constraint propagation (0 = off).")]
+    [Range(0, 10)]
+    public int smoothingPasses;
+
+    [Tooltip("Blend factor per smoothing pass (0 = no smoothing, 1 = full average).")]
+    [Range(0f, 1f)]
+    public float smoothingStrength;
+
     public static TerrainWFCConfig Default => new TerrainWFCConfig
     {
         noiseLayers = new[] { NoiseLayer.Default },
         seed = 42,
         heightBuffer = 2,
-    };
-
-    /// <summary>Example: Large hills with fine details.</summary>
-    public static TerrainWFCConfig HillsWithDetails => new TerrainWFCConfig
-    {
-        noiseLayers = new[] { NoiseLayer.LargeHills, NoiseLayer.FineDetails },
-        seed = 42,
-        heightBuffer = 2,
+        smoothingPasses = 2,
+        smoothingStrength = 0.5f,
     };
 }
 
@@ -100,9 +103,12 @@ public static class TerrainWFCGenerator
     /// Optionally bakes the result into a Unity Terrain.
     /// </summary>
     public static void Generate(TerrainGridAuthoring grid, TerrainWFCConfig config, Terrain unityTerrain = null)
-        => Generate(grid, config, unityTerrain != null ? new[] { unityTerrain } : null);
+        => Generate(grid, config, unityTerrain != null ? new[] { unityTerrain } : null, null);
 
     public static void Generate(TerrainGridAuthoring grid, TerrainWFCConfig config, Terrain[] terrains)
+        => Generate(grid, config, terrains, null);
+
+    public static void Generate(TerrainGridAuthoring grid, TerrainWFCConfig config, Terrain[] terrains, List<GradientLine> gradientLines)
     {
         if (grid == null) return;
         if (config.noiseLayers == null || config.noiseLayers.Length == 0)
@@ -124,27 +130,59 @@ public static class TerrainWFCGenerator
 
         int[,] heights = new int[w, h];
 
-        // Sample all layers and accumulate their contributions
+        // Sample all layers and accumulate their contributions.
+        bool hasGradients = gradientLines != null && gradientLines.Count > 0;
+
         for (int cz = 0; cz < h; cz++)
         {
             for (int cx = 0; cx < w; cx++)
             {
                 float totalHeight = 0f;
+                Vector2 cornerTilePos = new Vector2(cx, cz);
 
-                foreach (NoiseLayer layer in config.noiseLayers)
+                for (int li = 0; li < config.noiseLayers.Length; li++)
                 {
-                    float scale = Mathf.Max(0.001f, layer.perlinScale);
+                    NoiseLayer baseLayer = config.noiseLayers[li];
+                    NoiseLayer layer = baseLayer;
+
+                    if (hasGradients)
+                        layer = EvaluateGradientOverrides(baseLayer, li, cornerTilePos, gradientLines);
+
+                    // Always sample noise at the BASE perlinScale so the noise field
+                    // stays spatially coherent (no stripes or harsh transitions).
+                    float baseScale = Mathf.Max(0.001f, baseLayer.perlinScale);
+
+                    // Use gradient-overridden values for everything else.
                     int octaves = Mathf.Max(1, layer.octaves);
                     float persistence = Mathf.Clamp01(layer.persistence);
                     float lacunarity = Mathf.Max(1f, layer.lacunarity);
                     int heightContribution = Mathf.Max(1, layer.heightContribution);
 
-                    float noiseValue = SampleOctavePerlin(
-                        cx * scale + offsetX,
-                        cz * scale + offsetZ,
+                    float noiseVal = SampleOctavePerlin(
+                        cx * baseScale + offsetX,
+                        cz * baseScale + offsetZ,
                         octaves, persistence, lacunarity);
 
-                    totalHeight += noiseValue * heightContribution;
+                    // When perlinScale is overridden via a gradient line, use the ratio
+                    // (overrideScale / baseScale) as an amplitude multiplier. This turns
+                    // the perlinScale gradient into an intuitive "hilliness" control:
+                    //   lower scale → terrain is flatter
+                    //   higher scale → terrain is more mountainous
+                    float overrideScale = Mathf.Max(0.001f, layer.perlinScale);
+                    if (hasGradients && Mathf.Abs(overrideScale - baseScale) > 0.0001f)
+                    {
+                        float scaleRatio = overrideScale / baseScale;
+                        noiseVal *= scaleRatio;
+                    }
+
+                    totalHeight += noiseVal * heightContribution;
+                }
+
+                // Apply base height override (additive floor from gradient lines)
+                if (hasGradients)
+                {
+                    float baseHeightOffset = EvaluateBaseHeightOverride(cornerTilePos, gradientLines);
+                    totalHeight += baseHeightOffset;
                 }
 
                 heights[cx, cz] = Mathf.RoundToInt(totalHeight);
@@ -160,6 +198,15 @@ public static class TerrainWFCGenerator
         // Pull down any corner that is strictly higher than ALL its neighbours,
         // eliminating single-corner spike pyramids.
         RemoveIsolatedPeaks(heights, w, h);
+
+        // ── Step 2b2: Post-generation smoothing ──────────────────────────────
+        // Smooth out harsh transitions (especially from gradient line boundaries)
+        // by averaging neighbours, then re-enforce constraints.
+        if (config.smoothingPasses > 0 && config.smoothingStrength > 0f)
+        {
+            SmoothHeights(heights, w, h, config.smoothingPasses, config.smoothingStrength);
+            EnforceConstraints(heights, w, h);
+        }
 
         // ── Step 2c: Compute tile coverage from terrain objects ───────────
         // A tile is "covered" when its center lies within at least one Terrain.
@@ -415,5 +462,199 @@ public static class TerrainWFCGenerator
             }
         }
         return false;
+    }
+
+    // ── Post-generation smoothing ────────────────────────────────────────────────
+
+    private static void SmoothHeights(int[,] heights, int w, int h, int passes, float strength)
+    {
+        int[,] buffer = new int[w, h];
+
+        for (int pass = 0; pass < passes; pass++)
+        {
+            for (int cz = 0; cz < h; cz++)
+            {
+                for (int cx = 0; cx < w; cx++)
+                {
+                    float sum = 0f;
+                    int count = 0;
+
+                    for (int dz = -1; dz <= 1; dz++)
+                    {
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            if (dx == 0 && dz == 0) continue;
+                            int nx = cx + dx;
+                            int nz = cz + dz;
+                            if (nx < 0 || nx >= w || nz < 0 || nz >= h) continue;
+                            sum += heights[nx, nz];
+                            count++;
+                        }
+                    }
+
+                    if (count > 0)
+                    {
+                        float avg = sum / count;
+                        float blended = Mathf.Lerp(heights[cx, cz], avg, strength);
+                        buffer[cx, cz] = Mathf.RoundToInt(blended);
+                    }
+                    else
+                    {
+                        buffer[cx, cz] = heights[cx, cz];
+                    }
+                }
+            }
+
+            // Copy buffer back
+            for (int cz = 0; cz < h; cz++)
+                for (int cx = 0; cx < w; cx++)
+                    heights[cx, cz] = buffer[cx, cz];
+        }
+    }
+
+    // ── Gradient line evaluation ─────────────────────────────────────────────────
+
+    private static float EvaluateFalloff(float normalizedDist, EaseMode ease)
+    {
+        float t = Mathf.Clamp01(normalizedDist);
+        switch (ease)
+        {
+            case EaseMode.EaseIn:    t = t * t; break;
+            case EaseMode.EaseOut:   t = 1f - (1f - t) * (1f - t); break;
+            case EaseMode.EaseInOut: t = t * t * (3f - 2f * t); break;
+        }
+        return 1f - t;
+    }
+
+    private static NoiseLayer EvaluateGradientOverrides(
+        NoiseLayer baseLayer, int layerIndex, Vector2 cornerTilePos, List<GradientLine> gradientLines)
+    {
+        // Accumulators for weighted average blending
+        float wPerlinScale = 0f, sumPerlinScale = 0f;
+        float wHeightContrib = 0f, sumHeightContrib = 0f;
+        float wOctaves = 0f, sumOctaves = 0f;
+        float wPersistence = 0f, sumPersistence = 0f;
+        float wLacunarity = 0f, sumLacunarity = 0f;
+
+        for (int i = 0; i < gradientLines.Count; i++)
+        {
+            GradientLine line = gradientLines[i];
+            if (line.targetLayerIndex != layerIndex) continue;
+            if (line.points == null || line.points.Count < 2) continue;
+
+            line.ProjectPoint(cornerTilePos, out float t, out float dist);
+
+            if (dist > line.influenceHalfWidth) continue;
+
+            float normalizedDist = dist / Mathf.Max(0.001f, line.influenceHalfWidth);
+            float weight = EvaluateFalloff(normalizedDist, line.falloffEase);
+            if (weight <= 0f) continue;
+
+            if (line.overridePerlinScale)
+            {
+                float val = GradientLine.LerpParam(line.perlinScaleStart, line.perlinScaleEnd, t, line.perlinScaleEase, line.perlinScaleCustomCurve);
+                sumPerlinScale += val * weight;
+                wPerlinScale += weight;
+            }
+            if (line.overrideHeightContribution)
+            {
+                float val = GradientLine.LerpParam(line.heightContributionStart, line.heightContributionEnd, t, line.heightContributionEase, line.heightContributionCustomCurve);
+                sumHeightContrib += val * weight;
+                wHeightContrib += weight;
+            }
+            if (line.overrideOctaves)
+            {
+                float val = GradientLine.LerpParam(line.octavesStart, line.octavesEnd, t, line.octavesEase, line.octavesCustomCurve);
+                sumOctaves += val * weight;
+                wOctaves += weight;
+            }
+            if (line.overridePersistence)
+            {
+                float val = GradientLine.LerpParam(line.persistenceStart, line.persistenceEnd, t, line.persistenceEase, line.persistenceCustomCurve);
+                sumPersistence += val * weight;
+                wPersistence += weight;
+            }
+            if (line.overrideLacunarity)
+            {
+                float val = GradientLine.LerpParam(line.lacunarityStart, line.lacunarityEnd, t, line.lacunarityEase, line.lacunarityCustomCurve);
+                sumLacunarity += val * weight;
+                wLacunarity += weight;
+            }
+        }
+
+        NoiseLayer result = baseLayer;
+
+        // Blend each overridden parameter with the base value using the total
+        // falloff weight as the mix factor. This ensures a smooth transition
+        // from the gradient line's centre (full override) to its edge (base value).
+        if (wPerlinScale > 0f)
+        {
+            float gradVal = sumPerlinScale / wPerlinScale;
+            float blend = Mathf.Clamp01(wPerlinScale);
+            result.perlinScale = Mathf.Lerp(baseLayer.perlinScale, gradVal, blend);
+        }
+        if (wHeightContrib > 0f)
+        {
+            float gradVal = sumHeightContrib / wHeightContrib;
+            float blend = Mathf.Clamp01(wHeightContrib);
+            result.heightContribution = Mathf.RoundToInt(Mathf.Lerp(baseLayer.heightContribution, gradVal, blend));
+        }
+        if (wOctaves > 0f)
+        {
+            float gradVal = sumOctaves / wOctaves;
+            float blend = Mathf.Clamp01(wOctaves);
+            result.octaves = Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(baseLayer.octaves, gradVal, blend)), 1, 8);
+        }
+        if (wPersistence > 0f)
+        {
+            float gradVal = sumPersistence / wPersistence;
+            float blend = Mathf.Clamp01(wPersistence);
+            result.persistence = Mathf.Clamp01(Mathf.Lerp(baseLayer.persistence, gradVal, blend));
+        }
+        if (wLacunarity > 0f)
+        {
+            float gradVal = sumLacunarity / wLacunarity;
+            float blend = Mathf.Clamp01(wLacunarity);
+            result.lacunarity = Mathf.Max(1f, Mathf.Lerp(baseLayer.lacunarity, gradVal, blend));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Evaluates base height override from all gradient lines at a corner position.
+    /// Base height is additive — it raises the terrain floor by the specified amount.
+    /// Not tied to a specific noise layer; affects the combined height.
+    /// </summary>
+    private static float EvaluateBaseHeightOverride(
+        Vector2 cornerTilePos, List<GradientLine> gradientLines)
+    {
+        float wBaseHeight = 0f, sumBaseHeight = 0f;
+
+        for (int i = 0; i < gradientLines.Count; i++)
+        {
+            GradientLine line = gradientLines[i];
+            if (!line.overrideBaseHeight) continue;
+            if (line.points == null || line.points.Count < 2) continue;
+
+            line.ProjectPoint(cornerTilePos, out float t, out float dist);
+            if (dist > line.influenceHalfWidth) continue;
+
+            float normalizedDist = dist / Mathf.Max(0.001f, line.influenceHalfWidth);
+            float weight = EvaluateFalloff(normalizedDist, line.falloffEase);
+            if (weight <= 0f) continue;
+
+            float val = GradientLine.LerpParam(line.baseHeightStart, line.baseHeightEnd, t, line.baseHeightEase, line.baseHeightCustomCurve);
+            sumBaseHeight += val * weight;
+            wBaseHeight += weight;
+        }
+
+        if (wBaseHeight > 0f)
+        {
+            float gradVal = sumBaseHeight / wBaseHeight;
+            float blend = Mathf.Clamp01(wBaseHeight);
+            return gradVal * blend;
+        }
+        return 0f;
     }
 }

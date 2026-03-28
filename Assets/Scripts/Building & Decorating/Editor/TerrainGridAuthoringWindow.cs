@@ -45,13 +45,40 @@ public class TerrainGridAuthoringWindow : EditorWindow
     private bool dragPaintValue;
     private Vector2Int lastPaintedCell = new Vector2Int(int.MinValue, int.MinValue);
 
-    // WFC generation state
-    private TerrainWFCConfig wfcConfig = TerrainWFCConfig.Default;
-    private bool[] layerFoldouts = new bool[0];
-    private Vector2 layersScrollPosition = Vector2.zero;
+    // WFC generation state — reads/writes from targetAuthoring for persistence.
+    // Transient UI-only state (foldouts, scroll) lives here.
+    private bool[] layerFoldouts = new bool[2];
+    private Vector2 generationScrollPosition = Vector2.zero;
 
     // Tab selection (0 = Tile Editing, 1 = Terrain Generation)
     private int selectedTab = 0;
+
+    // Layer sub-tab (0 = Main, 1 = Detail) — determines which layer's gradient lines are shown/edited.
+    private int activeLayerTab = 0;
+
+    // ── Chunk map state ───────────────────────────────────────────────────────────
+    private const float ChunkMapHeight = 300f;
+    private const float ChunkMapPadding = 10f;
+    private static readonly Color ChunkFillColor = new Color(0.35f, 0.55f, 0.35f, 0.6f);
+    private static readonly Color ChunkBorderColor = new Color(0.2f, 0.4f, 0.2f, 1f);
+    private static readonly Color ChunkMapBgColor = new Color(0.18f, 0.18f, 0.18f, 1f);
+    private static readonly Color GradientLineColor = new Color(0.2f, 0.7f, 1f, 0.9f);
+    private static readonly Color GradientLineSelectedColor = new Color(1f, 0.9f, 0.2f, 1f);
+    private static readonly Color InfluenceBandColor = new Color(0.2f, 0.7f, 1f, 0.12f);
+    private static readonly Color InfluenceBandSelectedColor = new Color(1f, 0.9f, 0.2f, 0.12f);
+
+    // ── Gradient line drawing / selection state ───────────────────────────────────
+    private enum MapTool { Select, Draw }
+    private MapTool currentMapTool = MapTool.Select;
+    private int selectedLineIndex = -1;
+    private bool isDrawingLine = false;
+    private bool isRedrawingLine = false;
+    private int redrawLineIndex = -1;
+    private List<Vector2> drawingPoints = new List<Vector2>();
+
+    // Cached chunk layout (recomputed each frame — cheap)
+    private struct ChunkInfo { public Terrain terrain; public Rect tileRect; }
+    private Rect chunkBoundsInTiles;
 
     // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -214,16 +241,21 @@ public class TerrainGridAuthoringWindow : EditorWindow
         EditorGUILayout.EndVertical();
     }
 
-    // ── Terrain Generation Panel ──────────────────────────────────────────────────
+    // ── Terrain Generation Panel (revamped) ─────────────────────────────────────
 
     private void DrawTerrainGenerationPanel()
     {
+        generationScrollPosition = EditorGUILayout.BeginScrollView(generationScrollPosition);
         EditorGUILayout.BeginVertical(EditorStyles.helpBox);
 
         EditorGUILayout.LabelField("Terrain Generation (WFC)", EditorStyles.boldLabel);
         EditorGUILayout.Space(4);
 
-        // Show discovered child terrains as a read-only info line.
+        // Read persisted config from the component
+        TerrainWFCConfig cfg = targetAuthoring.WfcConfig;
+        bool changed = false;
+
+        // Show discovered child terrains.
         Terrain[] childTerrains = targetAuthoring.GetComponentsInChildren<Terrain>();
         string terrainInfo = childTerrains.Length == 0
             ? "None found (add Terrain children)"
@@ -231,84 +263,74 @@ public class TerrainGridAuthoringWindow : EditorWindow
         EditorGUILayout.LabelField("Child Terrains", terrainInfo);
 
         EditorGUILayout.Space(4);
-        wfcConfig.seed = EditorGUILayout.IntField("Seed", wfcConfig.seed);
+        int newSeed = EditorGUILayout.IntField("Seed", cfg.seed);
+        if (newSeed != cfg.seed) { cfg.seed = newSeed; changed = true; }
+
+        int newBuf = EditorGUILayout.IntField("Height Buffer (Tiles)", cfg.heightBuffer);
+        if (newBuf != cfg.heightBuffer) { cfg.heightBuffer = newBuf; changed = true; }
 
         EditorGUILayout.Space(8);
-        wfcConfig.heightBuffer = EditorGUILayout.IntField("Height Buffer (Tiles)", wfcConfig.heightBuffer);
-        EditorGUILayout.HelpBox("Lowest terrain point will be offset to this height. Set to 2 for 1 tile above ground.", MessageType.Info);
+
+        // ── Layer sub-tabs ───────────────────────────────────────────────
+        EnsureTwoLayers(ref cfg, ref changed);
+
+        EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+        activeLayerTab = GUILayout.Toolbar(activeLayerTab,
+            new[] { "Main Layer", "Detail Layer" }, EditorStyles.toolbarButton);
+        EditorGUILayout.EndHorizontal();
+
+        // ── Terrain Chunk Map ─────────────────────────────────────────────
+        DrawChunkMap(childTerrains);
+
+        EditorGUILayout.Space(4);
+
+        // ── Drawing toolbar ──────────────────────────────────────────────
+        DrawMapToolbar();
+
+        EditorGUILayout.Space(4);
+
+        // ── Selected line properties ─────────────────────────────────────
+        DrawSelectedLineInspector(ref cfg, ref changed);
 
         EditorGUILayout.Space(8);
-        EditorGUILayout.LabelField("Noise Layers", EditorStyles.boldLabel);
-        EditorGUILayout.HelpBox(
-            "Combine multiple noise layers with different scales:\n" +
-            "• Large scale (0.01-0.05) + high contribution = big smooth hills\n" +
-            "• Small scale (0.1-0.3) + low contribution = fine terrain details",
-            MessageType.None);
 
-        // Ensure foldout array size matches layer count
-        if (wfcConfig.noiseLayers == null || wfcConfig.noiseLayers.Length == 0)
-        {
-            wfcConfig.noiseLayers = new[] { NoiseLayer.Default };
-        }
-        if (layerFoldouts.Length != wfcConfig.noiseLayers.Length)
-        {
-            System.Array.Resize(ref layerFoldouts, wfcConfig.noiseLayers.Length);
-        }
+        // ── Active layer noise settings ──────────────────────────────────
+        string layerLabel = activeLayerTab == 0 ? "Main Layer Settings" : "Detail Layer Settings";
+        EditorGUILayout.LabelField(layerLabel, EditorStyles.boldLabel);
 
-        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-        
-        // Scrollable noise layers section
-        layersScrollPosition = EditorGUILayout.BeginScrollView(layersScrollPosition, GUILayout.Height(250));
-        
-        // Draw each layer
-        for (int i = 0; i < wfcConfig.noiseLayers.Length; i++)
-        {
-            DrawNoiseLayer(ref wfcConfig.noiseLayers[i], i);
-        }
-        
-        EditorGUILayout.EndScrollView();
+        if (layerFoldouts.Length < cfg.noiseLayers.Length)
+            System.Array.Resize(ref layerFoldouts, cfg.noiseLayers.Length);
 
-        EditorGUILayout.Space(4);
-        EditorGUILayout.BeginHorizontal();
-        if (GUILayout.Button("Add Layer"))
-        {
-            AddNoiseLayer();
-        }
-        if (GUILayout.Button("Remove Last") && wfcConfig.noiseLayers.Length > 1)
-        {
-            RemoveLastNoiseLayer();
-        }
-        EditorGUILayout.EndHorizontal();
+        int li = Mathf.Clamp(activeLayerTab, 0, cfg.noiseLayers.Length - 1);
+        if (DrawNoiseLayerPersisted(ref cfg.noiseLayers[li], li))
+            changed = true;
 
-        EditorGUILayout.Space(4);
-        EditorGUILayout.LabelField("Presets", EditorStyles.boldLabel);
-        EditorGUILayout.BeginHorizontal();
-        if (GUILayout.Button("Simple"))
-        {
-            wfcConfig = TerrainWFCConfig.Default;
-            System.Array.Resize(ref layerFoldouts, wfcConfig.noiseLayers.Length);
-        }
-        if (GUILayout.Button("Hills + Details"))
-        {
-            wfcConfig = TerrainWFCConfig.HillsWithDetails;
-            System.Array.Resize(ref layerFoldouts, wfcConfig.noiseLayers.Length);
-        }
-        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.Space(8);
 
-        EditorGUILayout.EndVertical();
+        // ── Post-Generation Smoothing ────────────────────────────────────
+        EditorGUILayout.LabelField("Post-Generation Smoothing", EditorStyles.boldLabel);
+        int newSmPasses = EditorGUILayout.IntSlider("Smoothing Passes", cfg.smoothingPasses, 0, 10);
+        if (newSmPasses != cfg.smoothingPasses) { cfg.smoothingPasses = newSmPasses; changed = true; }
+        float newSmStr = EditorGUILayout.Slider("Smoothing Strength", cfg.smoothingStrength, 0f, 1f);
+        if (newSmStr != cfg.smoothingStrength) { cfg.smoothingStrength = newSmStr; changed = true; }
 
-        EditorGUILayout.Space(4);
+        EditorGUILayout.Space(8);
+
+        // ── Generate / Clear ─────────────────────────────────────────────
         if (GUILayout.Button("Generate Terrain"))
         {
             RecordChange("Generate WFC Terrain");
-            TerrainWFCGenerator.Generate(targetAuthoring, wfcConfig, childTerrains);
+            targetAuthoring.WfcConfig = cfg;
+            TerrainWFCGenerator.Generate(targetAuthoring, cfg, childTerrains, targetAuthoring.GradientLines);
             MarkDirty();
         }
         if (GUILayout.Button("Randomise Seed & Generate"))
         {
-            wfcConfig.seed = Random.Range(0, 99999);
+            cfg.seed = Random.Range(0, 99999);
+            changed = true;
             RecordChange("Generate WFC Terrain (Random)");
-            TerrainWFCGenerator.Generate(targetAuthoring, wfcConfig, childTerrains);
+            targetAuthoring.WfcConfig = cfg;
+            TerrainWFCGenerator.Generate(targetAuthoring, cfg, childTerrains, targetAuthoring.GradientLines);
             MarkDirty();
         }
         if (GUILayout.Button("Clear Terrain"))
@@ -318,7 +340,579 @@ public class TerrainGridAuthoringWindow : EditorWindow
             MarkDirty();
         }
 
+        // Write back if any field changed
+        if (changed)
+        {
+            RecordChange("Edit WFC Config");
+            targetAuthoring.WfcConfig = cfg;
+            MarkDirty();
+        }
+
         EditorGUILayout.EndVertical();
+        EditorGUILayout.EndScrollView();
+    }
+
+    // ── Ensure exactly 2 noise layers ─────────────────────────────────────────────
+
+    private static void EnsureTwoLayers(ref TerrainWFCConfig cfg, ref bool changed)
+    {
+        if (cfg.noiseLayers == null || cfg.noiseLayers.Length == 0)
+        {
+            cfg.noiseLayers = new[] { NoiseLayer.Default, NoiseLayer.FineDetails };
+            changed = true;
+        }
+        else if (cfg.noiseLayers.Length == 1)
+        {
+            System.Array.Resize(ref cfg.noiseLayers, 2);
+            cfg.noiseLayers[1] = NoiseLayer.FineDetails;
+            changed = true;
+        }
+        else if (cfg.noiseLayers.Length > 2)
+        {
+            System.Array.Resize(ref cfg.noiseLayers, 2);
+            changed = true;
+        }
+    }
+
+    // ── Terrain Chunk Map ─────────────────────────────────────────────────────────
+
+    private List<ChunkInfo> ComputeChunkLayout(Terrain[] terrains)
+    {
+        var chunks = new List<ChunkInfo>();
+        if (targetAuthoring == null) return chunks;
+
+        Vector3 gridPos = targetAuthoring.transform.position;
+        Vector3 gridRight = targetAuthoring.transform.right;
+        Vector3 gridForward = targetAuthoring.transform.forward;
+        Vector3 originOffset = targetAuthoring.GridOriginLocalOffset;
+
+        foreach (Terrain t in terrains)
+        {
+            if (t == null || t.terrainData == null) continue;
+            Vector3 tPos = t.transform.position;
+            Vector3 tSize = t.terrainData.size;
+
+            // Project terrain min/max into grid tile-space
+            float minTX = float.MaxValue, minTZ = float.MaxValue;
+            float maxTX = float.MinValue, maxTZ = float.MinValue;
+
+            for (int ci = 0; ci < 4; ci++)
+            {
+                float wx = tPos.x + (ci % 2 == 0 ? 0f : tSize.x);
+                float wz = tPos.z + (ci < 2 ? 0f : tSize.z);
+
+                Vector3 offset = new Vector3(wx - gridPos.x, 0f, wz - gridPos.z);
+                float localX = Vector3.Dot(offset, gridRight) - originOffset.x;
+                float localZ = Vector3.Dot(offset, gridForward) - originOffset.z;
+
+                float tx = localX / FullTileWorldSize;
+                float tz = localZ / FullTileWorldSize;
+
+                if (tx < minTX) minTX = tx;
+                if (tx > maxTX) maxTX = tx;
+                if (tz < minTZ) minTZ = tz;
+                if (tz > maxTZ) maxTZ = tz;
+            }
+
+            chunks.Add(new ChunkInfo
+            {
+                terrain = t,
+                tileRect = Rect.MinMaxRect(minTX, minTZ, maxTX, maxTZ)
+            });
+        }
+
+        return chunks;
+    }
+
+    private Rect ComputeChunkBounds(List<ChunkInfo> chunks)
+    {
+        if (chunks.Count == 0)
+        {
+            // Fall back to full tile grid size
+            Vector2Int ft = targetAuthoring.FullTileGridSize;
+            return new Rect(0, 0, ft.x, ft.y);
+        }
+
+        float minX = float.MaxValue, minZ = float.MaxValue;
+        float maxX = float.MinValue, maxZ = float.MinValue;
+        foreach (var c in chunks)
+        {
+            if (c.tileRect.xMin < minX) minX = c.tileRect.xMin;
+            if (c.tileRect.yMin < minZ) minZ = c.tileRect.yMin;
+            if (c.tileRect.xMax > maxX) maxX = c.tileRect.xMax;
+            if (c.tileRect.yMax > maxZ) maxZ = c.tileRect.yMax;
+        }
+        return Rect.MinMaxRect(minX, minZ, maxX, maxZ);
+    }
+
+    /// <summary>Convert tile-space (X,Z) to pixel position inside the map rect.</summary>
+    private Vector2 TileToPixel(Vector2 tilePos, Rect mapRect, Rect bounds)
+    {
+        float scaleX = (mapRect.width - ChunkMapPadding * 2) / Mathf.Max(0.1f, bounds.width);
+        float scaleZ = (mapRect.height - ChunkMapPadding * 2) / Mathf.Max(0.1f, bounds.height);
+        float scale = Mathf.Min(scaleX, scaleZ);
+
+        float offsetX = mapRect.x + ChunkMapPadding + (mapRect.width - ChunkMapPadding * 2 - bounds.width * scale) * 0.5f;
+        float offsetZ = mapRect.y + ChunkMapPadding + (mapRect.height - ChunkMapPadding * 2 - bounds.height * scale) * 0.5f;
+
+        float px = offsetX + (tilePos.x - bounds.x) * scale;
+        // Flip Z so +Z is up on screen
+        float pz = offsetZ + (bounds.yMax - tilePos.y - bounds.y) * scale;
+        // Actually: screen Y increases downward, tile Z increases upward.
+        pz = offsetZ + (bounds.height - (tilePos.y - bounds.y)) * scale;
+
+        return new Vector2(px, pz);
+    }
+
+    /// <summary>Convert pixel position inside the map rect to tile-space (X,Z).</summary>
+    private Vector2 PixelToTile(Vector2 pixel, Rect mapRect, Rect bounds)
+    {
+        float scaleX = (mapRect.width - ChunkMapPadding * 2) / Mathf.Max(0.1f, bounds.width);
+        float scaleZ = (mapRect.height - ChunkMapPadding * 2) / Mathf.Max(0.1f, bounds.height);
+        float scale = Mathf.Min(scaleX, scaleZ);
+
+        float offsetX = mapRect.x + ChunkMapPadding + (mapRect.width - ChunkMapPadding * 2 - bounds.width * scale) * 0.5f;
+        float offsetZ = mapRect.y + ChunkMapPadding + (mapRect.height - ChunkMapPadding * 2 - bounds.height * scale) * 0.5f;
+
+        float tx = (pixel.x - offsetX) / scale + bounds.x;
+        float tz = bounds.yMax - (pixel.y - offsetZ) / scale;
+
+        return new Vector2(tx, tz);
+    }
+
+    private void DrawChunkMap(Terrain[] terrains)
+    {
+        // Reserve a fixed-height area
+        Rect mapRect = GUILayoutUtility.GetRect(10f, ChunkMapHeight, GUILayout.ExpandWidth(true));
+
+        if (Event.current.type == EventType.Layout) return;
+
+        var chunks = ComputeChunkLayout(terrains);
+        chunkBoundsInTiles = ComputeChunkBounds(chunks);
+
+        // Background
+        EditorGUI.DrawRect(mapRect, ChunkMapBgColor);
+
+        // Draw each terrain chunk
+        foreach (var chunk in chunks)
+        {
+            Vector2 minPx = TileToPixel(new Vector2(chunk.tileRect.xMin, chunk.tileRect.yMin), mapRect, chunkBoundsInTiles);
+            Vector2 maxPx = TileToPixel(new Vector2(chunk.tileRect.xMax, chunk.tileRect.yMax), mapRect, chunkBoundsInTiles);
+
+            float left = Mathf.Min(minPx.x, maxPx.x);
+            float top = Mathf.Min(minPx.y, maxPx.y);
+            float right = Mathf.Max(minPx.x, maxPx.x);
+            float bottom = Mathf.Max(minPx.y, maxPx.y);
+
+            Rect chunkPixelRect = Rect.MinMaxRect(left, top, right, bottom);
+            EditorGUI.DrawRect(chunkPixelRect, ChunkFillColor);
+
+            // Border
+            EditorGUI.DrawRect(new Rect(chunkPixelRect.x, chunkPixelRect.y, chunkPixelRect.width, 1f), ChunkBorderColor);
+            EditorGUI.DrawRect(new Rect(chunkPixelRect.x, chunkPixelRect.yMax - 1f, chunkPixelRect.width, 1f), ChunkBorderColor);
+            EditorGUI.DrawRect(new Rect(chunkPixelRect.x, chunkPixelRect.y, 1f, chunkPixelRect.height), ChunkBorderColor);
+            EditorGUI.DrawRect(new Rect(chunkPixelRect.xMax - 1f, chunkPixelRect.y, 1f, chunkPixelRect.height), ChunkBorderColor);
+
+            // Label
+            string label = chunk.terrain != null ? chunk.terrain.name : "?";
+            GUI.Label(chunkPixelRect, label, EditorStyles.centeredGreyMiniLabel);
+        }
+
+        // Draw gradient lines for the active layer
+        DrawGradientLinesOnMap(mapRect);
+
+        // Handle map input (drawing / selecting)
+        HandleChunkMapInput(mapRect);
+    }
+
+    // ── Gradient line rendering on the map ────────────────────────────────────────
+
+    private void DrawGradientLinesOnMap(Rect mapRect)
+    {
+        var lines = targetAuthoring.GradientLines;
+        if (lines == null) return;
+
+        for (int i = 0; i < lines.Count; i++)
+        {
+            GradientLine line = lines[i];
+            if (line.targetLayerIndex != activeLayerTab) continue;
+            if (line.points == null || line.points.Count < 2) continue;
+
+            bool isSelected = (i == selectedLineIndex);
+            Color lineColor = isSelected ? GradientLineSelectedColor : GradientLineColor;
+            Color bandColor = isSelected ? InfluenceBandSelectedColor : InfluenceBandColor;
+            float lineWidth = isSelected ? 3f : 2f;
+
+            // Draw influence band (approximate with offset polylines)
+            DrawInfluenceBand(line, mapRect, bandColor);
+
+            // Draw the polyline
+            Vector2 prev = TileToPixel(line.points[0], mapRect, chunkBoundsInTiles);
+            for (int p = 1; p < line.points.Count; p++)
+            {
+                Vector2 curr = TileToPixel(line.points[p], mapRect, chunkBoundsInTiles);
+                DrawLineSegment(prev, curr, lineColor, lineWidth);
+                prev = curr;
+            }
+
+            // Draw start/end markers
+            Vector2 startPx = TileToPixel(line.points[0], mapRect, chunkBoundsInTiles);
+            Vector2 endPx = TileToPixel(line.points[line.points.Count - 1], mapRect, chunkBoundsInTiles);
+            EditorGUI.DrawRect(new Rect(startPx.x - 3, startPx.y - 3, 6, 6), lineColor);
+            EditorGUI.DrawRect(new Rect(endPx.x - 3, endPx.y - 3, 6, 6), lineColor);
+        }
+
+        // Draw in-progress freehand line
+        if (isDrawingLine && drawingPoints.Count >= 2)
+        {
+            Vector2 prev = TileToPixel(drawingPoints[0], mapRect, chunkBoundsInTiles);
+            for (int p = 1; p < drawingPoints.Count; p++)
+            {
+                Vector2 curr = TileToPixel(drawingPoints[p], mapRect, chunkBoundsInTiles);
+                DrawLineSegment(prev, curr, GradientLineColor, 2f);
+                prev = curr;
+            }
+        }
+    }
+
+    private void DrawInfluenceBand(GradientLine line, Rect mapRect, Color bandColor)
+    {
+        // Approximate the influence band by drawing offset lines on both sides
+        if (line.points.Count < 2) return;
+
+        // Compute pixel scale factor
+        float scaleX = (mapRect.width - ChunkMapPadding * 2) / Mathf.Max(0.1f, chunkBoundsInTiles.width);
+        float scaleZ = (mapRect.height - ChunkMapPadding * 2) / Mathf.Max(0.1f, chunkBoundsInTiles.height);
+        float pixelScale = Mathf.Min(scaleX, scaleZ);
+        float bandWidthPx = line.influenceHalfWidth * pixelScale;
+
+        // Draw a simple rect band approximation along each segment
+        for (int i = 0; i < line.points.Count - 1; i++)
+        {
+            Vector2 aPx = TileToPixel(line.points[i], mapRect, chunkBoundsInTiles);
+            Vector2 bPx = TileToPixel(line.points[i + 1], mapRect, chunkBoundsInTiles);
+
+            Vector2 dir = (bPx - aPx);
+            float len = dir.magnitude;
+            if (len < 0.5f) continue;
+            dir /= len;
+            Vector2 perp = new Vector2(-dir.y, dir.x);
+
+            // Draw a thin rect for this segment's influence band
+            Vector2 center = (aPx + bPx) * 0.5f;
+            Rect bandRect = new Rect(
+                center.x - len * 0.5f - 1f,
+                center.y - bandWidthPx,
+                len + 2f,
+                bandWidthPx * 2f);
+
+            // Simple axis-aligned approximation — for non-axis-aligned segments, just draw a wide rect
+            float minPx = Mathf.Min(aPx.x, bPx.x) - bandWidthPx;
+            float maxPx = Mathf.Max(aPx.x, bPx.x) + bandWidthPx;
+            float minPy = Mathf.Min(aPx.y, bPx.y) - bandWidthPx;
+            float maxPy = Mathf.Max(aPx.y, bPx.y) + bandWidthPx;
+            EditorGUI.DrawRect(Rect.MinMaxRect(minPx, minPy, maxPx, maxPy), bandColor);
+        }
+    }
+
+    private static void DrawLineSegment(Vector2 a, Vector2 b, Color color, float width)
+    {
+        // Use EditorGUI.DrawRect to approximate line segments with thin rects
+        Vector2 dir = b - a;
+        float len = dir.magnitude;
+        if (len < 0.1f) return;
+
+        // For nearly horizontal/vertical lines, draw a thin rect. For diagonal, draw a series of tiny rects.
+        float steps = Mathf.Max(1f, len / 2f);
+        int stepCount = Mathf.CeilToInt(steps);
+        float hw = width * 0.5f;
+
+        for (int s = 0; s < stepCount; s++)
+        {
+            float t0 = (float)s / stepCount;
+            float t1 = (float)(s + 1) / stepCount;
+            Vector2 p0 = Vector2.Lerp(a, b, t0);
+            Vector2 p1 = Vector2.Lerp(a, b, t1);
+            float px = Mathf.Min(p0.x, p1.x) - hw;
+            float py = Mathf.Min(p0.y, p1.y) - hw;
+            float w = Mathf.Max(Mathf.Abs(p1.x - p0.x), width);
+            float h = Mathf.Max(Mathf.Abs(p1.y - p0.y), width);
+            EditorGUI.DrawRect(new Rect(px, py, w, h), color);
+        }
+    }
+
+    // ── Map input handling ────────────────────────────────────────────────────────
+
+    private void HandleChunkMapInput(Rect mapRect)
+    {
+        Event e = Event.current;
+        int controlId = GUIUtility.GetControlID(FocusType.Passive);
+
+        if (currentMapTool == MapTool.Draw)
+        {
+            HandleDrawInput(e, controlId, mapRect);
+        }
+        else // Select
+        {
+            HandleSelectInput(e, controlId, mapRect);
+        }
+    }
+
+    private void HandleDrawInput(Event e, int controlId, Rect mapRect)
+    {
+        switch (e.GetTypeForControl(controlId))
+        {
+            case EventType.MouseDown:
+                if (e.button == 0 && mapRect.Contains(e.mousePosition))
+                {
+                    GUIUtility.hotControl = controlId;
+                    isDrawingLine = true;
+                    drawingPoints.Clear();
+                    drawingPoints.Add(PixelToTile(e.mousePosition, mapRect, chunkBoundsInTiles));
+                    e.Use();
+                }
+                break;
+
+            case EventType.MouseDrag:
+                if (isDrawingLine && e.button == 0)
+                {
+                    Vector2 tilePos = PixelToTile(e.mousePosition, mapRect, chunkBoundsInTiles);
+                    // Only add if moved enough in tile-space
+                    if (drawingPoints.Count == 0 || Vector2.Distance(tilePos, drawingPoints[drawingPoints.Count - 1]) > 0.1f)
+                    {
+                        drawingPoints.Add(tilePos);
+                    }
+                    Repaint();
+                    e.Use();
+                }
+                break;
+
+            case EventType.MouseUp:
+                if (isDrawingLine && e.button == 0)
+                {
+                    GUIUtility.hotControl = 0;
+                    isDrawingLine = false;
+
+                    if (drawingPoints.Count >= 2)
+                    {
+                        // Simplify the polyline
+                        var simplified = GradientLine.SimplifyPolyline(drawingPoints, 0.3f);
+                        if (simplified.Count >= 2)
+                        {
+                            if (isRedrawingLine && redrawLineIndex >= 0 && redrawLineIndex < targetAuthoring.GradientLines.Count)
+                            {
+                                RecordChange("Redraw Gradient Line");
+                                targetAuthoring.GradientLines[redrawLineIndex].points = simplified;
+                                selectedLineIndex = redrawLineIndex;
+                                MarkDirty();
+                            }
+                            else
+                            {
+                                RecordChange("Draw Gradient Line");
+                                var newLine = new GradientLine
+                                {
+                                    targetLayerIndex = activeLayerTab,
+                                    points = simplified,
+                                    influenceHalfWidth = 5f,
+                                    falloffEase = EaseMode.Linear,
+                                };
+                                // Set default curve values from the current base layer
+                                TerrainWFCConfig cfg = targetAuthoring.WfcConfig;
+                                if (cfg.noiseLayers != null && activeLayerTab < cfg.noiseLayers.Length)
+                                {
+                                    NoiseLayer baseLayer = cfg.noiseLayers[activeLayerTab];
+                                    newLine.perlinScaleStart = baseLayer.perlinScale;
+                                    newLine.perlinScaleEnd = baseLayer.perlinScale;
+                                    newLine.heightContributionStart = baseLayer.heightContribution;
+                                    newLine.heightContributionEnd = baseLayer.heightContribution;
+                                    newLine.octavesStart = baseLayer.octaves;
+                                    newLine.octavesEnd = baseLayer.octaves;
+                                    newLine.persistenceStart = baseLayer.persistence;
+                                    newLine.persistenceEnd = baseLayer.persistence;
+                                    newLine.lacunarityStart = baseLayer.lacunarity;
+                                    newLine.lacunarityEnd = baseLayer.lacunarity;
+                                    newLine.baseHeightStart = 0f;
+                                    newLine.baseHeightEnd = 0f;
+                                }
+                                targetAuthoring.AddGradientLine(newLine);
+                                selectedLineIndex = targetAuthoring.GradientLines.Count - 1;
+                                MarkDirty();
+                            }
+                        }
+                    }
+                    isRedrawingLine = false;
+                    redrawLineIndex = -1;
+                    drawingPoints.Clear();
+                    e.Use();
+                }
+                break;
+        }
+    }
+
+    private void HandleSelectInput(Event e, int controlId, Rect mapRect)
+    {
+        switch (e.GetTypeForControl(controlId))
+        {
+            case EventType.MouseDown:
+                if (e.button == 0 && mapRect.Contains(e.mousePosition))
+                {
+                    Vector2 tilePos = PixelToTile(e.mousePosition, mapRect, chunkBoundsInTiles);
+                    int closestIdx = -1;
+                    float closestDist = float.MaxValue;
+
+                    var lines = targetAuthoring.GradientLines;
+                    for (int i = 0; i < lines.Count; i++)
+                    {
+                        if (lines[i].targetLayerIndex != activeLayerTab) continue;
+                        if (lines[i].points == null || lines[i].points.Count < 2) continue;
+
+                        lines[i].ProjectPoint(tilePos, out float t, out float dist);
+                        if (dist < closestDist)
+                        {
+                            closestDist = dist;
+                            closestIdx = i;
+                        }
+                    }
+
+                    // Select if within reasonable distance (influence width or 3 tiles, whichever is larger)
+                    if (closestIdx >= 0)
+                    {
+                        float threshold = Mathf.Max(3f, lines[closestIdx].influenceHalfWidth);
+                        if (closestDist <= threshold)
+                            selectedLineIndex = closestIdx;
+                        else
+                            selectedLineIndex = -1;
+                    }
+                    else
+                    {
+                        selectedLineIndex = -1;
+                    }
+
+                    Repaint();
+                    e.Use();
+                }
+                break;
+        }
+    }
+
+    // ── Map toolbar ──────────────────────────────────────────────────────────────
+
+    private void DrawMapToolbar()
+    {
+        EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+
+        int toolIdx = (int)currentMapTool;
+        int newToolIdx = GUILayout.Toolbar(toolIdx, new[] { "Select", "Draw" }, EditorStyles.toolbarButton, GUILayout.Width(160));
+        if (newToolIdx != toolIdx) currentMapTool = (MapTool)newToolIdx;
+
+        GUILayout.FlexibleSpace();
+
+        GUI.enabled = selectedLineIndex >= 0 && selectedLineIndex < targetAuthoring.GradientLines.Count;
+        if (GUILayout.Button("Redraw Selected", EditorStyles.toolbarButton, GUILayout.Width(110)))
+        {
+            redrawLineIndex = selectedLineIndex;
+            isRedrawingLine = true;
+            isDrawingLine = false;
+            drawingPoints.Clear();
+            currentMapTool = MapTool.Draw;
+        }
+        if (GUILayout.Button("Delete Selected", EditorStyles.toolbarButton, GUILayout.Width(100)))
+        {
+            RecordChange("Delete Gradient Line");
+            targetAuthoring.RemoveGradientLine(selectedLineIndex);
+            selectedLineIndex = -1;
+            MarkDirty();
+        }
+        GUI.enabled = true;
+
+        if (GUILayout.Button("Clear All Lines", EditorStyles.toolbarButton, GUILayout.Width(100)))
+        {
+            RecordChange("Clear All Gradient Lines");
+            while (targetAuthoring.GradientLines.Count > 0)
+                targetAuthoring.RemoveGradientLine(0);
+            selectedLineIndex = -1;
+            MarkDirty();
+        }
+
+        EditorGUILayout.EndHorizontal();
+
+        // Info label
+        int lineCountForLayer = 0;
+        foreach (var l in targetAuthoring.GradientLines)
+            if (l.targetLayerIndex == activeLayerTab) lineCountForLayer++;
+        EditorGUILayout.LabelField($"{lineCountForLayer} gradient line(s) on {(activeLayerTab == 0 ? "Main" : "Detail")} layer",
+            EditorStyles.miniLabel);
+    }
+
+    // ── Selected line inspector ──────────────────────────────────────────────────
+
+    private void DrawSelectedLineInspector(ref TerrainWFCConfig cfg, ref bool cfgChanged)
+    {
+        var lines = targetAuthoring.GradientLines;
+        if (selectedLineIndex < 0 || selectedLineIndex >= lines.Count) return;
+
+        GradientLine line = lines[selectedLineIndex];
+        if (line.targetLayerIndex != activeLayerTab) return;
+
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+        EditorGUILayout.LabelField($"Gradient Line #{selectedLineIndex + 1}", EditorStyles.boldLabel);
+
+        EditorGUI.BeginChangeCheck();
+
+        line.influenceHalfWidth = Mathf.Max(0.5f, EditorGUILayout.FloatField("Influence Half-Width (tiles)", line.influenceHalfWidth));
+        line.falloffEase = (EaseMode)EditorGUILayout.EnumPopup("Falloff", line.falloffEase);
+
+        EditorGUILayout.Space(4);
+        EditorGUILayout.LabelField("Parameter Overrides (Start \u2192 End along line)", EditorStyles.miniLabel);
+
+        // Reference base layer values
+        NoiseLayer baseLayer = NoiseLayer.Default;
+        if (cfg.noiseLayers != null && activeLayerTab < cfg.noiseLayers.Length)
+            baseLayer = cfg.noiseLayers[activeLayerTab];
+
+        DrawParamOverride("Perlin Scale", ref line.overridePerlinScale, ref line.perlinScaleStart, ref line.perlinScaleEnd, ref line.perlinScaleEase, ref line.perlinScaleCustomCurve, baseLayer.perlinScale);
+        DrawParamOverride("Height Contribution", ref line.overrideHeightContribution, ref line.heightContributionStart, ref line.heightContributionEnd, ref line.heightContributionEase, ref line.heightContributionCustomCurve, baseLayer.heightContribution);
+        DrawParamOverride("Octaves", ref line.overrideOctaves, ref line.octavesStart, ref line.octavesEnd, ref line.octavesEase, ref line.octavesCustomCurve, baseLayer.octaves);
+        DrawParamOverride("Persistence", ref line.overridePersistence, ref line.persistenceStart, ref line.persistenceEnd, ref line.persistenceEase, ref line.persistenceCustomCurve, baseLayer.persistence);
+        DrawParamOverride("Lacunarity", ref line.overrideLacunarity, ref line.lacunarityStart, ref line.lacunarityEnd, ref line.lacunarityEase, ref line.lacunarityCustomCurve, baseLayer.lacunarity);
+        DrawParamOverride("Base Height", ref line.overrideBaseHeight, ref line.baseHeightStart, ref line.baseHeightEnd, ref line.baseHeightEase, ref line.baseHeightCustomCurve, 0f);
+
+        if (EditorGUI.EndChangeCheck())
+        {
+            RecordChange("Edit Gradient Line");
+            MarkDirty();
+        }
+
+        EditorGUILayout.EndVertical();
+    }
+
+    private static void DrawParamOverride(string label, ref bool enabled, ref float startVal, ref float endVal, ref EaseMode ease, ref AnimationCurve customCurve, float baseValue)
+    {
+        EditorGUILayout.BeginHorizontal();
+        enabled = EditorGUILayout.ToggleLeft(label, enabled, GUILayout.Width(160));
+        if (enabled)
+        {
+            EditorGUILayout.LabelField("Start", GUILayout.Width(32));
+            startVal = EditorGUILayout.FloatField(startVal, GUILayout.Width(50));
+            EditorGUILayout.LabelField("\u2192", GUILayout.Width(16));
+            EditorGUILayout.LabelField("End", GUILayout.Width(26));
+            endVal = EditorGUILayout.FloatField(endVal, GUILayout.Width(50));
+            ease = (EaseMode)EditorGUILayout.EnumPopup(ease, GUILayout.Width(80));
+        }
+        else
+        {
+            EditorGUILayout.LabelField($"(base: {baseValue:G4})", EditorStyles.miniLabel);
+        }
+        EditorGUILayout.EndHorizontal();
+
+        if (enabled && ease == EaseMode.Custom)
+        {
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.Space(164);
+            EditorGUILayout.LabelField("Curve", GUILayout.Width(40));
+            customCurve = EditorGUILayout.CurveField(customCurve);
+            EditorGUILayout.EndHorizontal();
+        }
     }
 
     // ── Right panel (scrollable paint grid) ───────────────────────────────────────
@@ -677,62 +1271,53 @@ public class TerrainGridAuthoringWindow : EditorWindow
         Repaint();
     }
 
-    // ── Noise layer UI ────────────────────────────────────────────────────────────
+    // ── Noise layer UI (persisted) ───────────────────────────────────────────────
 
-    private void DrawNoiseLayer(ref NoiseLayer layer, int index)
+    /// <summary>Draw a single noise layer's settings. Returns true if any value changed.</summary>
+    private bool DrawNoiseLayerPersisted(ref NoiseLayer layer, int index)
     {
+        bool changed = false;
+
         GUILayout.BeginVertical(EditorStyles.helpBox);
 
-        // Layer foldout header
         layerFoldouts[index] = EditorGUILayout.Foldout(
             layerFoldouts[index],
-            $"Layer {index + 1}: Scale {layer.perlinScale:F3}, Height {layer.heightContribution}",
+            $"{(index == 0 ? "Main" : "Detail")}: Scale {layer.perlinScale:F3}, Height {layer.heightContribution}",
             true);
 
         if (layerFoldouts[index])
         {
             EditorGUI.indentLevel++;
 
-            layer.perlinScale = EditorGUILayout.FloatField(
+            float newScale = EditorGUILayout.FloatField(
                 new GUIContent("Perlin Scale", "Lower = larger features (0.01 for huge hills, 0.2 for fine details)"),
                 layer.perlinScale);
+            if (newScale != layer.perlinScale) { layer.perlinScale = newScale; changed = true; }
 
-            layer.heightContribution = EditorGUILayout.IntField(
+            int newHeight = EditorGUILayout.IntField(
                 new GUIContent("Height Contribution", "How much this layer adds to final terrain height"),
                 layer.heightContribution);
+            if (newHeight != layer.heightContribution) { layer.heightContribution = newHeight; changed = true; }
 
-            layer.octaves = EditorGUILayout.IntSlider(
+            int newOct = EditorGUILayout.IntSlider(
                 new GUIContent("Octaves", "Number of noise octaves for fractal detail within layer"),
                 layer.octaves, 1, 8);
+            if (newOct != layer.octaves) { layer.octaves = newOct; changed = true; }
 
-            layer.persistence = EditorGUILayout.Slider(
+            float newPers = EditorGUILayout.Slider(
                 new GUIContent("Persistence", "Amplitude decay factor between octaves"),
                 layer.persistence, 0f, 1f);
+            if (newPers != layer.persistence) { layer.persistence = newPers; changed = true; }
 
-            layer.lacunarity = EditorGUILayout.FloatField(
+            float newLac = EditorGUILayout.FloatField(
                 new GUIContent("Lacunarity", "Frequency growth factor between octaves"),
                 layer.lacunarity);
+            if (newLac != layer.lacunarity) { layer.lacunarity = newLac; changed = true; }
 
             EditorGUI.indentLevel--;
         }
 
         GUILayout.EndVertical();
-    }
-
-    private void AddNoiseLayer()
-    {
-        RecordChange("Add Noise Layer");
-        System.Array.Resize(ref wfcConfig.noiseLayers, wfcConfig.noiseLayers.Length + 1);
-        wfcConfig.noiseLayers[wfcConfig.noiseLayers.Length - 1] = NoiseLayer.FineDetails;
-        System.Array.Resize(ref layerFoldouts, wfcConfig.noiseLayers.Length);
-        MarkDirty();
-    }
-
-    private void RemoveLastNoiseLayer()
-    {
-        RecordChange("Remove Noise Layer");
-        System.Array.Resize(ref wfcConfig.noiseLayers, wfcConfig.noiseLayers.Length - 1);
-        System.Array.Resize(ref layerFoldouts, wfcConfig.noiseLayers.Length);
-        MarkDirty();
+        return changed;
     }
 }

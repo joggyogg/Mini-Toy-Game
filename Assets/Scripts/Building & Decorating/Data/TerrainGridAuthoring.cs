@@ -86,6 +86,29 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
     // by IsFullTileEdge regardless of this mask.
     [SerializeField] private bool[] paintLockedTiles = new bool[0];
 
+    // ── WFC Generation config (persisted so it survives window close/reopen) ─────
+
+    [SerializeField] private TerrainWFCConfig wfcConfig = TerrainWFCConfig.Default;
+    [SerializeField] private List<GradientLine> gradientLines = new List<GradientLine>();
+
+    public TerrainWFCConfig WfcConfig
+    {
+        get => wfcConfig;
+        set => wfcConfig = value;
+    }
+
+    public List<GradientLine> GradientLines => gradientLines;
+
+    public void AddGradientLine(GradientLine line)
+    {
+        if (line != null) gradientLines.Add(line);
+    }
+
+    public void RemoveGradientLine(int index)
+    {
+        if (index >= 0 && index < gradientLines.Count) gradientLines.RemoveAt(index);
+    }
+
     // ── ISupportSurface ──────────────────────────────────────────────────────────
 
     public float FemaleTileSize => femaleTileSize;
