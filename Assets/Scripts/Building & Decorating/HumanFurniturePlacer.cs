@@ -23,6 +23,10 @@ public class HumanFurniturePlacer : MonoBehaviour
     [SerializeField] private Color validTint   = new Color(0.5f, 1f, 0.5f, 1f);
     [SerializeField] private Color invalidTint = new Color(1f, 0.4f, 0.4f, 1f);
 
+    [Header("Stacking")]
+    [Tooltip("Seconds the cursor must hover over a furniture surface before surface-snap activates.")]
+    [SerializeField] private float surfaceDwellSeconds = 0.2f;
+
     // ── State ──────────────────────────────────────────────────────────────────
     private PlacedFurnitureRecord selected;
     private bool isDragging;
@@ -31,6 +35,15 @@ public class HumanFurniturePlacer : MonoBehaviour
     private Vector3 lastValidPosition;
     private List<PlacedFurnitureRecord> draggedChildren = new List<PlacedFurnitureRecord>();
     private Dictionary<Renderer, Color[]> originalColors = new Dictionary<Renderer, Color[]>();
+
+    // ── Drag plane stabilization & surface hover ──
+    private float dragFixedPlaneY;
+    private float dragOriginalFloorY;
+    private float surfaceHoverTime;
+    private float surfaceHoverTargetY;
+    private bool surfaceHoverValid;
+    private float surfaceExitTime;
+    private Vector3[] lastValidChildPositions = System.Array.Empty<Vector3>();
 
     /// <summary>True while the player is actively dragging a piece of furniture.</summary>
     public bool IsDragging => isDragging;
@@ -120,8 +133,34 @@ public class HumanFurniturePlacer : MonoBehaviour
         isDragging = true;
         lastValidPosition = auth.transform.position;
 
+        // Lock the drag plane Y so it stays stable across frames
+        dragFixedPlaneY = auth.transform.position.y + auth.MaleGridFloorLocalY;
+        if (dragIsFloorMove)
+        {
+            dragOriginalFloorY = dragFixedPlaneY;
+        }
+        else
+        {
+            // Piece is on a surface; remember the terrain floor Y for fallback
+            Vector2Int originForFloor = GetPieceOriginCell(auth);
+            if (terrain.TryGetCellCenterWorld(originForFloor.x, originForFloor.y, out Vector3 floorCellW))
+                dragOriginalFloorY = floorCellW.y;
+            else
+                dragOriginalFloorY = 0f;
+        }
+        surfaceHoverTime = 0f;
+        surfaceHoverValid = false;
+
         // Gather children that ride on this piece
         draggedChildren = GatherAllChildren(record);
+
+        // Snapshot child positions for cancel/revert
+        lastValidChildPositions = new Vector3[draggedChildren.Count];
+        for (int i = 0; i < draggedChildren.Count; i++)
+        {
+            if (draggedChildren[i].Instance != null)
+                lastValidChildPositions[i] = draggedChildren[i].Instance.transform.position;
+        }
     }
 
     private void TryRotateUnderCursor()
@@ -147,12 +186,32 @@ public class HumanFurniturePlacer : MonoBehaviour
         if (selected == null || selected.Instance == null) { CancelDrag(); return; }
 
         Ray ray = sourceCamera.ScreenPointToRay(Mouse.current.position.ReadValue());
-
-        // Raycast onto a horizontal plane at the piece's current floor Y
         PlaceableGridAuthoring auth = selected.Instance;
-        float floorWorldY = auth.transform.position.y + auth.MaleGridFloorLocalY;
-        Plane dragPlane = new Plane(Vector3.up, new Vector3(0f, floorWorldY, 0f));
 
+        // ── Surface hover dwell detection (only while floor-dragging) ──
+        if (dragIsFloorMove)
+        {
+            UpdateSurfaceHoverDetection(ray, auth);
+
+            if (surfaceHoverValid && surfaceHoverTime >= surfaceDwellSeconds)
+            {
+                // Dwell threshold reached → switch to surface drag mode
+                dragIsFloorMove = false;
+                dragFixedPlaneY = surfaceHoverTargetY;
+                surfaceHoverTime = 0f;
+                surfaceHoverValid = false;
+                surfaceExitTime = 0f;
+            }
+        }
+        else
+        {
+            // ── Surface exit detection (while surface-dragging) ──
+            // Check if cursor is still over any furniture surface; if not, accumulate exit timer
+            UpdateSurfaceExitDetection(ray, auth);
+        }
+
+        // Use the locked drag plane Y (stable — no per-frame oscillation)
+        Plane dragPlane = new Plane(Vector3.up, new Vector3(0f, dragFixedPlaneY, 0f));
         if (!dragPlane.Raycast(ray, out float enter)) return;
         Vector3 worldHit = ray.GetPoint(enter);
 
@@ -169,31 +228,46 @@ public class HumanFurniturePlacer : MonoBehaviour
 
         Vector3 posBefore = auth.transform.position;
 
-        bool valid;
-        Vector3 delta;
+        bool valid = false;
+        Vector3 delta = Vector3.zero;
+
         if (dragIsFloorMove)
+        {
             valid = TryDragOnFloor(auth, newOrigin, draggedChildren, out delta);
+        }
         else
+        {
             valid = TryDragOnSurface(auth, newOrigin, out delta);
+            // Surface move failed — stay at last valid surface position.
+            // The surface exit detection timer handles the transition to floor mode.
+        }
 
         if (valid)
         {
             lastValidPosition = auth.transform.position;
-            // Move children by the same delta
-            if (dragIsFloorMove)
+            // Move children by the same delta (floor AND surface mode)
+            for (int i = 0; i < draggedChildren.Count; i++)
             {
-                for (int i = 0; i < draggedChildren.Count; i++)
-                {
-                    if (draggedChildren[i].Instance != null)
-                        draggedChildren[i].Instance.transform.position = childPositionsBefore[i] + delta;
-                }
+                if (draggedChildren[i].Instance != null)
+                    draggedChildren[i].Instance.transform.position = childPositionsBefore[i] + delta;
+            }
+            // Snapshot valid child positions for cancel/revert
+            for (int i = 0; i < draggedChildren.Count; i++)
+            {
+                if (draggedChildren[i].Instance != null)
+                    lastValidChildPositions[i] = draggedChildren[i].Instance.transform.position;
             }
             ApplyTint(validTint);
         }
         else
         {
-            // Revert
+            // Revert parent and children
             auth.transform.position = posBefore;
+            for (int i = 0; i < draggedChildren.Count; i++)
+            {
+                if (draggedChildren[i].Instance != null)
+                    draggedChildren[i].Instance.transform.position = childPositionsBefore[i];
+            }
             ApplyTint(invalidTint);
         }
     }
@@ -202,17 +276,144 @@ public class HumanFurniturePlacer : MonoBehaviour
     {
         isDragging = false;
         draggedChildren.Clear();
+        lastValidChildPositions = System.Array.Empty<Vector3>();
         ClearTint();
+        surfaceHoverTime = 0f;
+        surfaceHoverValid = false;
+        surfaceExitTime = 0f;
     }
 
     private void CancelDrag()
     {
         if (isDragging && selected != null && selected.Instance != null)
+        {
             selected.Instance.transform.position = lastValidPosition;
+            // Restore children to their last valid positions
+            for (int i = 0; i < draggedChildren.Count; i++)
+            {
+                if (draggedChildren[i].Instance != null && i < lastValidChildPositions.Length)
+                    draggedChildren[i].Instance.transform.position = lastValidChildPositions[i];
+            }
+        }
         isDragging = false;
         draggedChildren.Clear();
+        lastValidChildPositions = System.Array.Empty<Vector3>();
         ClearTint();
         Deselect();
+        surfaceHoverTime = 0f;
+        surfaceHoverValid = false;
+        surfaceExitTime = 0f;
+    }
+
+    // ── Surface Hover Detection ───────────────────────────────────────────────
+
+    private void UpdateSurfaceHoverDetection(Ray ray, PlaceableGridAuthoring draggedAuth)
+    {
+        // Cast through the scene to find furniture under the cursor (skip the dragged piece)
+        RaycastHit[] hits = Physics.RaycastAll(ray, 500f, furnitureAndTerrainLayer);
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+
+        foreach (RaycastHit hit in hits)
+        {
+            PlaceableGridAuthoring hitAuth = hit.collider.GetComponentInParent<PlaceableGridAuthoring>();
+            if (hitAuth == null || hitAuth == draggedAuth) continue;
+
+            PlacedFurnitureRecord hitRecord = FindRecord(hitAuth);
+            if (hitRecord == null) continue;
+
+            // Skip children being dragged along with the parent
+            bool isChild = false;
+            for (int i = 0; i < draggedChildren.Count; i++)
+            {
+                if (draggedChildren[i].Instance == hitAuth) { isChild = true; break; }
+            }
+            if (isChild) continue;
+
+            // Find the topmost female surface layer on this furniture
+            float bestSurfaceY = float.NegativeInfinity;
+            bool hasSurface = false;
+
+            foreach (FemaleGridLayer layer in hitAuth.EnumerateFemaleLayers())
+            {
+                float worldSY = hitAuth.transform.position.y + hitAuth.MaleGridFloorLocalY + layer.LocalHeight;
+                if (worldSY > bestSurfaceY)
+                {
+                    bestSurfaceY = worldSY;
+                    hasSurface = true;
+                }
+            }
+
+            if (!hasSurface) continue;
+
+            // Accumulate dwell time on the same surface; reset when switching surfaces
+            if (surfaceHoverValid && Mathf.Abs(bestSurfaceY - surfaceHoverTargetY) < 0.1f)
+            {
+                surfaceHoverTime += Time.deltaTime;
+            }
+            else
+            {
+                surfaceHoverTargetY = bestSurfaceY;
+                surfaceHoverTime = Time.deltaTime;
+                surfaceHoverValid = true;
+            }
+            return;
+        }
+
+        // Cursor is not over any furniture — reset hover state
+        surfaceHoverTime = 0f;
+        surfaceHoverValid = false;
+    }
+
+    /// <summary>
+    /// While in surface-drag mode, checks whether the cursor has left all furniture surfaces.
+    /// If it stays off surfaces for the dwell period, switches back to floor mode.
+    /// </summary>
+    private void UpdateSurfaceExitDetection(Ray ray, PlaceableGridAuthoring draggedAuth)
+    {
+        bool cursorOverSurface = false;
+
+        RaycastHit[] hits = Physics.RaycastAll(ray, 500f, furnitureAndTerrainLayer);
+        foreach (RaycastHit hit in hits)
+        {
+            PlaceableGridAuthoring hitAuth = hit.collider.GetComponentInParent<PlaceableGridAuthoring>();
+            if (hitAuth == null || hitAuth == draggedAuth) continue;
+
+            PlacedFurnitureRecord hitRecord = FindRecord(hitAuth);
+            if (hitRecord == null) continue;
+
+            bool isChild = false;
+            for (int i = 0; i < draggedChildren.Count; i++)
+            {
+                if (draggedChildren[i].Instance == hitAuth) { isChild = true; break; }
+            }
+            if (isChild) continue;
+
+            // Any non-excluded furniture with female layers counts as "still over surface"
+            foreach (FemaleGridLayer layer in hitAuth.EnumerateFemaleLayers())
+            {
+                cursorOverSurface = true;
+                break;
+            }
+            if (cursorOverSurface) break;
+        }
+
+        if (cursorOverSurface)
+        {
+            surfaceExitTime = 0f;
+        }
+        else
+        {
+            surfaceExitTime += Time.deltaTime;
+            if (surfaceExitTime >= surfaceDwellSeconds)
+            {
+                // Cursor has been away from surfaces long enough — drop to floor
+                dragIsFloorMove = true;
+                dragFixedPlaneY = dragOriginalFloorY;
+                surfaceExitTime = 0f;
+                surfaceHoverTime = 0f;
+                surfaceHoverValid = false;
+            }
+        }
     }
 
     // ── Floor Drag ─────────────────────────────────────────────────────────────
@@ -222,24 +423,6 @@ public class HumanFurniturePlacer : MonoBehaviour
     {
         delta = Vector3.zero;
         IReadOnlyList<PlacedFurnitureRecord> placed = buildController.PlacedFurniture;
-
-        // Cross-layer: if every male cell lands on an enabled female cell, snap to surface
-        if (TryFindSurfaceUnderFootprint(auth, newOrigin, selected, alsoExclude, out float snapY))
-        {
-            if (!terrain.TryGetCellCenterWorld(newOrigin.x, newOrigin.y, out Vector3 snapCell00))
-                return false;
-            Vector3 oldPos = auth.transform.position;
-            Vector2 off = auth.MaleGridOriginLocalOffset;
-            float ts = auth.FemaleTileSize;
-            Transform t = auth.transform;
-            Vector3 snapPos = snapCell00
-                - t.right   * (off.x + 0.5f * ts)
-                - t.forward * (off.y + 0.5f * ts);
-            snapPos.y = snapY - auth.MaleGridFloorLocalY;
-            auth.transform.position = snapPos;
-            delta = snapPos - oldPos;
-            return true;
-        }
 
         // Build occupancy set excluding dragged piece + children
         var occupied = new HashSet<Vector2Int>();
@@ -293,15 +476,12 @@ public class HumanFurniturePlacer : MonoBehaviour
     {
         delta = Vector3.zero;
 
-        // Find a surface all male cells fit on
-        if (!TryFindSurfaceUnderFootprint(auth, newOrigin, selected, null, out float surfaceY))
-        {
-            // Fell off surface — try floor
-            return TryDragOnFloor(auth, newOrigin, null, out delta);
-        }
+        // Find a surface all male cells fit on (caller handles floor fallback)
+        if (!TryFindSurfaceUnderFootprint(auth, newOrigin, selected, draggedChildren, out float surfaceY))
+            return false;
 
-        // Check occupancy at that surface
-        HashSet<Vector2Int> occupied = BuildSurfaceOccupancy(surfaceY, selected);
+        // Check occupancy at that surface, excluding all pieces in the drag group
+        HashSet<Vector2Int> occupied = BuildSurfaceOccupancy(surfaceY, selected, draggedChildren);
         List<Vector2Int> cells = GetRotatedCellsForOrigin(auth, newOrigin);
         if (cells == null) return false;
         foreach (Vector2Int tc in cells)
@@ -503,6 +683,12 @@ public class HumanFurniturePlacer : MonoBehaviour
 
         bool hasDragLevel = TryGetPieceTerrainLevel(auth, out int dragLevel);
 
+        // Collect all enabled female cells across every host, grouped by surface height.
+        // This allows a large piece to span multiple smaller hosts at the same height.
+        const float yTol = 0.1f;
+        var surfaceHeights = new List<float>();
+        var surfaceCells   = new List<HashSet<Vector2Int>>();
+
         foreach (PlacedFurnitureRecord host in placed)
         {
             if (host == draggedRecord || host.Instance == null) continue;
@@ -521,25 +707,45 @@ public class HumanFurniturePlacer : MonoBehaviour
             {
                 float worldSY = ht.position.y + hostAuth.MaleGridFloorLocalY + layer.LocalHeight;
                 HashSet<Vector2Int> enabledCells = GetFemaleLayerCells(hostAuth, layer);
-
                 if (enabledCells.Count == 0) continue;
 
-                bool allFit = true;
-                foreach (Vector2Int tc in footprint)
+                // Find or create the bucket for this surface height
+                int bucketIndex = -1;
+                for (int i = 0; i < surfaceHeights.Count; i++)
                 {
-                    if (!enabledCells.Contains(tc)) { allFit = false; break; }
+                    if (Mathf.Abs(surfaceHeights[i] - worldSY) < yTol) { bucketIndex = i; break; }
                 }
-                if (!allFit) continue;
+                if (bucketIndex < 0)
+                {
+                    bucketIndex = surfaceHeights.Count;
+                    surfaceHeights.Add(worldSY);
+                    surfaceCells.Add(new HashSet<Vector2Int>());
+                }
 
-                HashSet<Vector2Int> occupied = BuildSurfaceOccupancy(worldSY, draggedRecord);
-                bool anyBlocked = false;
-                foreach (Vector2Int tc in footprint)
-                    if (occupied.Contains(tc)) { anyBlocked = true; break; }
-                if (anyBlocked) continue;
-
-                snappedSurfaceY = worldSY;
-                return true;
+                surfaceCells[bucketIndex].UnionWith(enabledCells);
             }
+        }
+
+        // Check each surface height: does the combined female coverage contain the full footprint?
+        for (int i = 0; i < surfaceHeights.Count; i++)
+        {
+            HashSet<Vector2Int> combined = surfaceCells[i];
+
+            bool allFit = true;
+            foreach (Vector2Int tc in footprint)
+            {
+                if (!combined.Contains(tc)) { allFit = false; break; }
+            }
+            if (!allFit) continue;
+
+            HashSet<Vector2Int> occupied = BuildSurfaceOccupancy(surfaceHeights[i], draggedRecord, alsoExclude);
+            bool anyBlocked = false;
+            foreach (Vector2Int tc in footprint)
+                if (occupied.Contains(tc)) { anyBlocked = true; break; }
+            if (anyBlocked) continue;
+
+            snappedSurfaceY = surfaceHeights[i];
+            return true;
         }
         return false;
     }
@@ -564,7 +770,8 @@ public class HumanFurniturePlacer : MonoBehaviour
         return cells;
     }
 
-    private HashSet<Vector2Int> BuildSurfaceOccupancy(float worldSurfaceY, PlacedFurnitureRecord excluded)
+    private HashSet<Vector2Int> BuildSurfaceOccupancy(float worldSurfaceY, PlacedFurnitureRecord excluded,
+        ICollection<PlacedFurnitureRecord> alsoExclude = null)
     {
         var occupied = new HashSet<Vector2Int>();
         const float yTol = 0.1f;
@@ -573,6 +780,7 @@ public class HumanFurniturePlacer : MonoBehaviour
         foreach (PlacedFurnitureRecord record in placed)
         {
             if (record == excluded || record.Instance == null) continue;
+            if (alsoExclude != null && alsoExclude.Contains(record)) continue;
             float baseY = record.Instance.transform.position.y + record.Instance.MaleGridFloorLocalY;
             if (Mathf.Abs(baseY - worldSurfaceY) > yTol) continue;
             AddMaleCellsToSet(record.Instance, occupied);
