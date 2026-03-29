@@ -46,15 +46,11 @@ public class TerrainGridAuthoringWindow : EditorWindow
     private Vector2Int lastPaintedCell = new Vector2Int(int.MinValue, int.MinValue);
 
     // WFC generation state — reads/writes from targetAuthoring for persistence.
-    // Transient UI-only state (foldouts, scroll) lives here.
-    private bool[] layerFoldouts = new bool[2];
+    // Transient UI-only state (scroll) lives here.
     private Vector2 generationScrollPosition = Vector2.zero;
 
     // Tab selection (0 = Tile Editing, 1 = Terrain Generation)
     private int selectedTab = 0;
-
-    // Layer sub-tab (0 = Main, 1 = Detail) — determines which layer's gradient lines are shown/edited.
-    private int activeLayerTab = 0;
 
     // ── Chunk map state ───────────────────────────────────────────────────────────
     private const float ChunkMapHeight = 300f;
@@ -271,14 +267,6 @@ public class TerrainGridAuthoringWindow : EditorWindow
 
         EditorGUILayout.Space(8);
 
-        // ── Layer sub-tabs ───────────────────────────────────────────────
-        EnsureTwoLayers(ref cfg, ref changed);
-
-        EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-        activeLayerTab = GUILayout.Toolbar(activeLayerTab,
-            new[] { "Main Layer", "Detail Layer" }, EditorStyles.toolbarButton);
-        EditorGUILayout.EndHorizontal();
-
         // ── Terrain Chunk Map ─────────────────────────────────────────────
         DrawChunkMap(childTerrains);
 
@@ -290,20 +278,7 @@ public class TerrainGridAuthoringWindow : EditorWindow
         EditorGUILayout.Space(4);
 
         // ── Selected line properties ─────────────────────────────────────
-        DrawSelectedLineInspector(ref cfg, ref changed);
-
-        EditorGUILayout.Space(8);
-
-        // ── Active layer noise settings ──────────────────────────────────
-        string layerLabel = activeLayerTab == 0 ? "Main Layer Settings" : "Detail Layer Settings";
-        EditorGUILayout.LabelField(layerLabel, EditorStyles.boldLabel);
-
-        if (layerFoldouts.Length < cfg.noiseLayers.Length)
-            System.Array.Resize(ref layerFoldouts, cfg.noiseLayers.Length);
-
-        int li = Mathf.Clamp(activeLayerTab, 0, cfg.noiseLayers.Length - 1);
-        if (DrawNoiseLayerPersisted(ref cfg.noiseLayers[li], li))
-            changed = true;
+        DrawSelectedLineInspector();
 
         EditorGUILayout.Space(8);
 
@@ -350,28 +325,6 @@ public class TerrainGridAuthoringWindow : EditorWindow
 
         EditorGUILayout.EndVertical();
         EditorGUILayout.EndScrollView();
-    }
-
-    // ── Ensure exactly 2 noise layers ─────────────────────────────────────────────
-
-    private static void EnsureTwoLayers(ref TerrainWFCConfig cfg, ref bool changed)
-    {
-        if (cfg.noiseLayers == null || cfg.noiseLayers.Length == 0)
-        {
-            cfg.noiseLayers = new[] { NoiseLayer.Default, NoiseLayer.FineDetails };
-            changed = true;
-        }
-        else if (cfg.noiseLayers.Length == 1)
-        {
-            System.Array.Resize(ref cfg.noiseLayers, 2);
-            cfg.noiseLayers[1] = NoiseLayer.FineDetails;
-            changed = true;
-        }
-        else if (cfg.noiseLayers.Length > 2)
-        {
-            System.Array.Resize(ref cfg.noiseLayers, 2);
-            changed = true;
-        }
     }
 
     // ── Terrain Chunk Map ─────────────────────────────────────────────────────────
@@ -535,7 +488,6 @@ public class TerrainGridAuthoringWindow : EditorWindow
         for (int i = 0; i < lines.Count; i++)
         {
             GradientLine line = lines[i];
-            if (line.targetLayerIndex != activeLayerTab) continue;
             if (line.points == null || line.points.Count < 2) continue;
 
             bool isSelected = (i == selectedLineIndex);
@@ -711,29 +663,10 @@ public class TerrainGridAuthoringWindow : EditorWindow
                                 RecordChange("Draw Gradient Line");
                                 var newLine = new GradientLine
                                 {
-                                    targetLayerIndex = activeLayerTab,
                                     points = simplified,
                                     influenceHalfWidth = 5f,
                                     falloffEase = EaseMode.Linear,
                                 };
-                                // Set default curve values from the current base layer
-                                TerrainWFCConfig cfg = targetAuthoring.WfcConfig;
-                                if (cfg.noiseLayers != null && activeLayerTab < cfg.noiseLayers.Length)
-                                {
-                                    NoiseLayer baseLayer = cfg.noiseLayers[activeLayerTab];
-                                    newLine.perlinScaleStart = baseLayer.perlinScale;
-                                    newLine.perlinScaleEnd = baseLayer.perlinScale;
-                                    newLine.heightContributionStart = baseLayer.heightContribution;
-                                    newLine.heightContributionEnd = baseLayer.heightContribution;
-                                    newLine.octavesStart = baseLayer.octaves;
-                                    newLine.octavesEnd = baseLayer.octaves;
-                                    newLine.persistenceStart = baseLayer.persistence;
-                                    newLine.persistenceEnd = baseLayer.persistence;
-                                    newLine.lacunarityStart = baseLayer.lacunarity;
-                                    newLine.lacunarityEnd = baseLayer.lacunarity;
-                                    newLine.baseHeightStart = 0f;
-                                    newLine.baseHeightEnd = 0f;
-                                }
                                 targetAuthoring.AddGradientLine(newLine);
                                 selectedLineIndex = targetAuthoring.GradientLines.Count - 1;
                                 MarkDirty();
@@ -763,7 +696,6 @@ public class TerrainGridAuthoringWindow : EditorWindow
                     var lines = targetAuthoring.GradientLines;
                     for (int i = 0; i < lines.Count; i++)
                     {
-                        if (lines[i].targetLayerIndex != activeLayerTab) continue;
                         if (lines[i].points == null || lines[i].points.Count < 2) continue;
 
                         lines[i].ProjectPoint(tilePos, out float t, out float dist);
@@ -808,6 +740,15 @@ public class TerrainGridAuthoringWindow : EditorWindow
         GUILayout.FlexibleSpace();
 
         GUI.enabled = selectedLineIndex >= 0 && selectedLineIndex < targetAuthoring.GradientLines.Count;
+        if (GUILayout.Button("Duplicate", EditorStyles.toolbarButton, GUILayout.Width(70)))
+        {
+            RecordChange("Duplicate Gradient Line");
+            var original = targetAuthoring.GradientLines[selectedLineIndex];
+            var copy = original.Duplicate();
+            targetAuthoring.AddGradientLine(copy);
+            selectedLineIndex = targetAuthoring.GradientLines.Count - 1;
+            MarkDirty();
+        }
         if (GUILayout.Button("Redraw Selected", EditorStyles.toolbarButton, GUILayout.Width(110)))
         {
             redrawLineIndex = selectedLineIndex;
@@ -837,22 +778,18 @@ public class TerrainGridAuthoringWindow : EditorWindow
         EditorGUILayout.EndHorizontal();
 
         // Info label
-        int lineCountForLayer = 0;
-        foreach (var l in targetAuthoring.GradientLines)
-            if (l.targetLayerIndex == activeLayerTab) lineCountForLayer++;
-        EditorGUILayout.LabelField($"{lineCountForLayer} gradient line(s) on {(activeLayerTab == 0 ? "Main" : "Detail")} layer",
-            EditorStyles.miniLabel);
+        int lineCount = targetAuthoring.GradientLines.Count;
+        EditorGUILayout.LabelField($"{lineCount} gradient line(s)", EditorStyles.miniLabel);
     }
 
     // ── Selected line inspector ──────────────────────────────────────────────────
 
-    private void DrawSelectedLineInspector(ref TerrainWFCConfig cfg, ref bool cfgChanged)
+    private void DrawSelectedLineInspector()
     {
         var lines = targetAuthoring.GradientLines;
         if (selectedLineIndex < 0 || selectedLineIndex >= lines.Count) return;
 
         GradientLine line = lines[selectedLineIndex];
-        if (line.targetLayerIndex != activeLayerTab) return;
 
         EditorGUILayout.BeginVertical(EditorStyles.helpBox);
         EditorGUILayout.LabelField($"Gradient Line #{selectedLineIndex + 1}", EditorStyles.boldLabel);
@@ -863,19 +800,18 @@ public class TerrainGridAuthoringWindow : EditorWindow
         line.falloffEase = (EaseMode)EditorGUILayout.EnumPopup("Falloff", line.falloffEase);
 
         EditorGUILayout.Space(4);
-        EditorGUILayout.LabelField("Parameter Overrides (Start \u2192 End along line)", EditorStyles.miniLabel);
+        line.perlinScale = EditorGUILayout.FloatField("Perlin Scale", line.perlinScale);
 
-        // Reference base layer values
-        NoiseLayer baseLayer = NoiseLayer.Default;
-        if (cfg.noiseLayers != null && activeLayerTab < cfg.noiseLayers.Length)
-            baseLayer = cfg.noiseLayers[activeLayerTab];
+        EditorGUILayout.Space(4);
+        EditorGUILayout.LabelField("Parameters (Start \u2192 End along line)", EditorStyles.miniLabel);
 
-        DrawParamOverride("Perlin Scale", ref line.overridePerlinScale, ref line.perlinScaleStart, ref line.perlinScaleEnd, ref line.perlinScaleEase, ref line.perlinScaleCustomCurve, baseLayer.perlinScale);
-        DrawParamOverride("Height Contribution", ref line.overrideHeightContribution, ref line.heightContributionStart, ref line.heightContributionEnd, ref line.heightContributionEase, ref line.heightContributionCustomCurve, baseLayer.heightContribution);
-        DrawParamOverride("Octaves", ref line.overrideOctaves, ref line.octavesStart, ref line.octavesEnd, ref line.octavesEase, ref line.octavesCustomCurve, baseLayer.octaves);
-        DrawParamOverride("Persistence", ref line.overridePersistence, ref line.persistenceStart, ref line.persistenceEnd, ref line.persistenceEase, ref line.persistenceCustomCurve, baseLayer.persistence);
-        DrawParamOverride("Lacunarity", ref line.overrideLacunarity, ref line.lacunarityStart, ref line.lacunarityEnd, ref line.lacunarityEase, ref line.lacunarityCustomCurve, baseLayer.lacunarity);
-        DrawParamOverride("Base Height", ref line.overrideBaseHeight, ref line.baseHeightStart, ref line.baseHeightEnd, ref line.baseHeightEase, ref line.baseHeightCustomCurve, 0f);
+        DrawParamField("Amplitude", ref line.amplitudeStart, ref line.amplitudeEnd, ref line.amplitudeEase, ref line.amplitudeCustomCurve);
+        DrawParamField("Period", ref line.periodStart, ref line.periodEnd, ref line.periodEase, ref line.periodCustomCurve);
+        DrawParamField("Height Contribution", ref line.heightContributionStart, ref line.heightContributionEnd, ref line.heightContributionEase, ref line.heightContributionCustomCurve);
+        DrawParamField("Octaves", ref line.octavesStart, ref line.octavesEnd, ref line.octavesEase, ref line.octavesCustomCurve);
+        DrawParamField("Persistence", ref line.persistenceStart, ref line.persistenceEnd, ref line.persistenceEase, ref line.persistenceCustomCurve);
+        DrawParamField("Lacunarity", ref line.lacunarityStart, ref line.lacunarityEnd, ref line.lacunarityEase, ref line.lacunarityCustomCurve);
+        DrawParamField("Base Height", ref line.baseHeightStart, ref line.baseHeightEnd, ref line.baseHeightEase, ref line.baseHeightCustomCurve);
 
         if (EditorGUI.EndChangeCheck())
         {
@@ -886,29 +822,22 @@ public class TerrainGridAuthoringWindow : EditorWindow
         EditorGUILayout.EndVertical();
     }
 
-    private static void DrawParamOverride(string label, ref bool enabled, ref float startVal, ref float endVal, ref EaseMode ease, ref AnimationCurve customCurve, float baseValue)
+    private static void DrawParamField(string label, ref float startVal, ref float endVal, ref EaseMode ease, ref AnimationCurve customCurve)
     {
         EditorGUILayout.BeginHorizontal();
-        enabled = EditorGUILayout.ToggleLeft(label, enabled, GUILayout.Width(160));
-        if (enabled)
-        {
-            EditorGUILayout.LabelField("Start", GUILayout.Width(32));
-            startVal = EditorGUILayout.FloatField(startVal, GUILayout.Width(50));
-            EditorGUILayout.LabelField("\u2192", GUILayout.Width(16));
-            EditorGUILayout.LabelField("End", GUILayout.Width(26));
-            endVal = EditorGUILayout.FloatField(endVal, GUILayout.Width(50));
-            ease = (EaseMode)EditorGUILayout.EnumPopup(ease, GUILayout.Width(80));
-        }
-        else
-        {
-            EditorGUILayout.LabelField($"(base: {baseValue:G4})", EditorStyles.miniLabel);
-        }
+        EditorGUILayout.LabelField(label, GUILayout.Width(130));
+        EditorGUILayout.LabelField("Start", GUILayout.Width(32));
+        startVal = EditorGUILayout.FloatField(startVal, GUILayout.Width(50));
+        EditorGUILayout.LabelField("\u2192", GUILayout.Width(16));
+        EditorGUILayout.LabelField("End", GUILayout.Width(26));
+        endVal = EditorGUILayout.FloatField(endVal, GUILayout.Width(50));
+        ease = (EaseMode)EditorGUILayout.EnumPopup(ease, GUILayout.Width(80));
         EditorGUILayout.EndHorizontal();
 
-        if (enabled && ease == EaseMode.Custom)
+        if (ease == EaseMode.Custom)
         {
             EditorGUILayout.BeginHorizontal();
-            GUILayout.Space(164);
+            GUILayout.Space(134);
             EditorGUILayout.LabelField("Curve", GUILayout.Width(40));
             customCurve = EditorGUILayout.CurveField(customCurve);
             EditorGUILayout.EndHorizontal();
@@ -1271,53 +1200,4 @@ public class TerrainGridAuthoringWindow : EditorWindow
         Repaint();
     }
 
-    // ── Noise layer UI (persisted) ───────────────────────────────────────────────
-
-    /// <summary>Draw a single noise layer's settings. Returns true if any value changed.</summary>
-    private bool DrawNoiseLayerPersisted(ref NoiseLayer layer, int index)
-    {
-        bool changed = false;
-
-        GUILayout.BeginVertical(EditorStyles.helpBox);
-
-        layerFoldouts[index] = EditorGUILayout.Foldout(
-            layerFoldouts[index],
-            $"{(index == 0 ? "Main" : "Detail")}: Scale {layer.perlinScale:F3}, Height {layer.heightContribution}",
-            true);
-
-        if (layerFoldouts[index])
-        {
-            EditorGUI.indentLevel++;
-
-            float newScale = EditorGUILayout.FloatField(
-                new GUIContent("Perlin Scale", "Lower = larger features (0.01 for huge hills, 0.2 for fine details)"),
-                layer.perlinScale);
-            if (newScale != layer.perlinScale) { layer.perlinScale = newScale; changed = true; }
-
-            int newHeight = EditorGUILayout.IntField(
-                new GUIContent("Height Contribution", "How much this layer adds to final terrain height"),
-                layer.heightContribution);
-            if (newHeight != layer.heightContribution) { layer.heightContribution = newHeight; changed = true; }
-
-            int newOct = EditorGUILayout.IntSlider(
-                new GUIContent("Octaves", "Number of noise octaves for fractal detail within layer"),
-                layer.octaves, 1, 8);
-            if (newOct != layer.octaves) { layer.octaves = newOct; changed = true; }
-
-            float newPers = EditorGUILayout.Slider(
-                new GUIContent("Persistence", "Amplitude decay factor between octaves"),
-                layer.persistence, 0f, 1f);
-            if (newPers != layer.persistence) { layer.persistence = newPers; changed = true; }
-
-            float newLac = EditorGUILayout.FloatField(
-                new GUIContent("Lacunarity", "Frequency growth factor between octaves"),
-                layer.lacunarity);
-            if (newLac != layer.lacunarity) { layer.lacunarity = newLac; changed = true; }
-
-            EditorGUI.indentLevel--;
-        }
-
-        GUILayout.EndVertical();
-        return changed;
-    }
 }

@@ -8,9 +8,9 @@ using UnityEngine.UI;
 /// and entering terraform or decorate mode via two buttons.
 ///
 /// The intended setup is that the player has a world-space or overlay canvas attached to them.
-/// This script opens and closes that menu, and exposes two UnityEvents that UI buttons fire:
-/// onTerraformRequested and onDecorateRequested. Wire those in the Inspector to
-/// GameModeManager.EnterHumanTerraformMode / EnterHumanDecorateMode.
+/// This script opens and closes that menu, and exposes three UnityEvents that UI buttons fire:
+/// onTerraformRequested, onDecorateRequested, and onConductorRequested. Wire those in the
+/// Inspector to GameModeManager.EnterHumanTerraformMode / EnterHumanDecorateMode / EnterHumanConductorMode.
 /// </summary>
 public class PlayerInteractionController : MonoBehaviour
 {
@@ -22,6 +22,7 @@ public class PlayerInteractionController : MonoBehaviour
     [Header("Buttons")]
     [SerializeField] private Button terraformButton;
     [SerializeField] private Button decorateButton;
+    [SerializeField] private Button conductorButton;
 
     [Header("Behavior")]
     [SerializeField] private bool unlockCursorWhileMenuOpen = true;
@@ -37,6 +38,7 @@ public class PlayerInteractionController : MonoBehaviour
     [SerializeField] private UnityEvent onMenuClosed;
     [SerializeField] private UnityEvent onTerraformRequested;
     [SerializeField] private UnityEvent onDecorateRequested;
+    [SerializeField] private UnityEvent onConductorRequested;
 
     private InputAction menuToggleAction;
     private bool menuOpen;
@@ -64,6 +66,7 @@ public class PlayerInteractionController : MonoBehaviour
         menuToggleAction?.Enable();
         if (terraformButton != null) terraformButton.onClick.AddListener(OnTerraformClicked);
         if (decorateButton != null) decorateButton.onClick.AddListener(OnDecorateClicked);
+        if (conductorButton != null) conductorButton.onClick.AddListener(OnConductorClicked);
     }
 
     private void OnDisable()
@@ -71,6 +74,7 @@ public class PlayerInteractionController : MonoBehaviour
         menuToggleAction?.Disable();
         if (terraformButton != null) terraformButton.onClick.RemoveListener(OnTerraformClicked);
         if (decorateButton != null) decorateButton.onClick.RemoveListener(OnDecorateClicked);
+        if (conductorButton != null) conductorButton.onClick.RemoveListener(OnConductorClicked);
     }
 
     private void Update()
@@ -110,6 +114,13 @@ public class PlayerInteractionController : MonoBehaviour
         if (!menuOpen) return;
         CloseMenu();
         onDecorateRequested?.Invoke();
+    }
+
+    private void OnConductorClicked()
+    {
+        if (!menuOpen) return;
+        CloseMenu();
+        onConductorRequested?.Invoke();
     }
 
     // ── Input helpers ─────────────────────────────────────────────────────────

@@ -12,17 +12,13 @@ public enum EaseMode
 
 /// <summary>
 /// A freehand-drawn gradient line on the terrain chunk map.
-/// Each line targets a specific noise layer (0 = Main, 1 = Detail) and can
-/// override any combination of noise parameters along its length via start/end values.
-/// The line has an influence half-width (in tiles) and a falloff curve that
-/// controls how the override strength fades with perpendicular distance.
+/// Each line carries its own noise parameters (amplitude, period, etc.) that
+/// interpolate from start to end along its length. The base terrain is flat;
+/// all shaping comes from gradient lines.
 /// </summary>
 [System.Serializable]
 public class GradientLine
 {
-    [Tooltip("Which noise layer this line affects (0 = Main, 1 = Detail).")]
-    public int targetLayerIndex;
-
     [Tooltip("Polyline points in tile-space (full-tile float coordinates).")]
     public List<Vector2> points = new List<Vector2>();
 
@@ -32,44 +28,52 @@ public class GradientLine
     [Tooltip("Falloff shape from centre to edge of influence.")]
     public EaseMode falloffEase = EaseMode.Linear;
 
-    // ── Per-parameter overrides ─────────────────────────────────────────────────
-    // Values linearly interpolate from start (line beginning) to end (line end).
+    // ── Noise sampling frequency ────────────────────────────────────────────────
+    [Tooltip("Perlin noise sampling frequency (lower = larger features).")]
+    public float perlinScale = 0.05f;
 
-    public bool overridePerlinScale;
-    public float perlinScaleStart = 0.12f;
-    public float perlinScaleEnd = 0.12f;
-    public EaseMode perlinScaleEase = EaseMode.Linear;
-    public AnimationCurve perlinScaleCustomCurve = AnimationCurve.Linear(0f, 0f, 1f, 1f);
+    // ── Per-parameter start/end values ──────────────────────────────────────────
 
-    public bool overrideHeightContribution;
+    public float amplitudeStart = 1f;
+    public float amplitudeEnd = 1f;
+    public EaseMode amplitudeEase = EaseMode.Linear;
+    public AnimationCurve amplitudeCustomCurve = AnimationCurve.Linear(0f, 0f, 1f, 1f);
+
+    public float periodStart = 1f;
+    public float periodEnd = 1f;
+    public EaseMode periodEase = EaseMode.Linear;
+    public AnimationCurve periodCustomCurve = AnimationCurve.Linear(0f, 0f, 1f, 1f);
+
     public float heightContributionStart = 4f;
     public float heightContributionEnd = 4f;
     public EaseMode heightContributionEase = EaseMode.Linear;
     public AnimationCurve heightContributionCustomCurve = AnimationCurve.Linear(0f, 0f, 1f, 1f);
 
-    public bool overrideOctaves;
     public float octavesStart = 3f;
     public float octavesEnd = 3f;
     public EaseMode octavesEase = EaseMode.Linear;
     public AnimationCurve octavesCustomCurve = AnimationCurve.Linear(0f, 0f, 1f, 1f);
 
-    public bool overridePersistence;
     public float persistenceStart = 0.45f;
     public float persistenceEnd = 0.45f;
     public EaseMode persistenceEase = EaseMode.Linear;
     public AnimationCurve persistenceCustomCurve = AnimationCurve.Linear(0f, 0f, 1f, 1f);
 
-    public bool overrideLacunarity;
     public float lacunarityStart = 2f;
     public float lacunarityEnd = 2f;
     public EaseMode lacunarityEase = EaseMode.Linear;
     public AnimationCurve lacunarityCustomCurve = AnimationCurve.Linear(0f, 0f, 1f, 1f);
 
-    public bool overrideBaseHeight;
     public float baseHeightStart = 0f;
     public float baseHeightEnd = 0f;
     public EaseMode baseHeightEase = EaseMode.Linear;
     public AnimationCurve baseHeightCustomCurve = AnimationCurve.Linear(0f, 0f, 1f, 1f);
+
+    /// <summary>Deep-copy this gradient line.</summary>
+    public GradientLine Duplicate()
+    {
+        return JsonUtility.FromJson<GradientLine>(JsonUtility.ToJson(this));
+    }
 
     /// <summary>Interpolate between start and end using the given ease mode at position t (0-1).</summary>
     public static float LerpParam(float start, float end, float t, EaseMode ease = EaseMode.Linear, AnimationCurve customCurve = null)

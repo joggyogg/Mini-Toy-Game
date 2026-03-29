@@ -3,12 +3,13 @@ using UnityEngine.InputSystem;
 using UnityEngine.Serialization;
 
 /// <summary>
-/// Attach to the Player. Manages transitions between toy mode and two human sub-modes:
+/// Attach to the Player. Manages transitions between toy mode and three human sub-modes:
 ///   - Terraform: brush overlay for raising/lowering terrain
 ///   - Decorate: furniture placement via 3D raycasting + catalog panel
+///   - Conductor: railroad spline drawing + terrain grading
 ///
-/// Menu buttons call EnterHumanTerraformMode / EnterHumanDecorateMode.
-/// Press H to return to toy mode from either human sub-mode.
+/// Menu buttons call EnterHumanTerraformMode / EnterHumanDecorateMode / EnterHumanConductorMode.
+/// Press H to return to toy mode from any human sub-mode.
 /// </summary>
 public class GameModeManager : MonoBehaviour
 {
@@ -24,14 +25,16 @@ public class GameModeManager : MonoBehaviour
     [SerializeField] private HumanFurniturePlacer humanFurniturePlacer;
     [FormerlySerializedAs("buildModeController")]
     [SerializeField] private FurnitureSpawner furnitureSpawner;
+    [SerializeField] private RailDrawingController railDrawingController;
 
     [Header("UI Panels")]
     [SerializeField] private GameObject terraformPanel;
+    [SerializeField] private GameObject conductorPanel;
 
     [Header("Toggle")]
     [SerializeField] private Key exitKey = Key.H;
 
-    public enum HumanSubMode { None, Terraform, Decorate }
+    public enum HumanSubMode { None, Terraform, Decorate, Conductor }
 
     private HumanSubMode currentSubMode = HumanSubMode.None;
 
@@ -58,8 +61,9 @@ public class GameModeManager : MonoBehaviour
     {
         if (currentSubMode == HumanSubMode.Terraform) return;
 
-        // If switching from decorate, tear down decorate-specific stuff first
-        if (currentSubMode == HumanSubMode.Decorate)
+        if (currentSubMode == HumanSubMode.Conductor)
+            DeactivateConductor();
+        else if (currentSubMode == HumanSubMode.Decorate)
             DeactivateDecorate();
 
         if (currentSubMode == HumanSubMode.None)
@@ -79,8 +83,9 @@ public class GameModeManager : MonoBehaviour
     {
         if (currentSubMode == HumanSubMode.Decorate) return;
 
-        // If switching from terraform, tear down terraform-specific stuff first
-        if (currentSubMode == HumanSubMode.Terraform)
+        if (currentSubMode == HumanSubMode.Conductor)
+            DeactivateConductor();
+        else if (currentSubMode == HumanSubMode.Terraform)
             DeactivateTerraform();
 
         if (currentSubMode == HumanSubMode.None)
@@ -102,10 +107,32 @@ public class GameModeManager : MonoBehaviour
             DeactivateTerraform();
         else if (currentSubMode == HumanSubMode.Decorate)
             DeactivateDecorate();
+        else if (currentSubMode == HumanSubMode.Conductor)
+            DeactivateConductor();
 
         currentSubMode = HumanSubMode.None;
 
         DeactivateHumanBase();
+    }
+
+    public void EnterHumanConductorMode()
+    {
+        if (currentSubMode == HumanSubMode.Conductor) return;
+
+        if (currentSubMode == HumanSubMode.Terraform)
+            DeactivateTerraform();
+        else if (currentSubMode == HumanSubMode.Decorate)
+            DeactivateDecorate();
+
+        if (currentSubMode == HumanSubMode.None)
+            ActivateHumanBase();
+
+        currentSubMode = HumanSubMode.Conductor;
+
+        if (terrainBrushOverlay != null) terrainBrushOverlay.gameObject.SetActive(false);
+        if (humanFurniturePlacer != null) humanFurniturePlacer.enabled = false;
+        if (railDrawingController != null) railDrawingController.enabled = true;
+        if (conductorPanel != null) conductorPanel.SetActive(true);
     }
 
     // ── Shared base activation / deactivation ─────────────────────────────────
@@ -155,5 +182,11 @@ public class GameModeManager : MonoBehaviour
     {
         if (humanFurniturePlacer != null) humanFurniturePlacer.enabled = false;
         if (furnitureSpawner != null) furnitureSpawner.ExitDecorateMode();
+    }
+
+    private void DeactivateConductor()
+    {
+        if (railDrawingController != null) railDrawingController.enabled = false;
+        if (conductorPanel != null) conductorPanel.SetActive(false);
     }
 }
