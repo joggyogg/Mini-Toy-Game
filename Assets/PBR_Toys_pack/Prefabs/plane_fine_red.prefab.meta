@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 05ff4ed2392bd56498d6cf8de4369496
+timeCreated: 1484853724
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/plane_fine_red.prefab
+  uploadId: 161120

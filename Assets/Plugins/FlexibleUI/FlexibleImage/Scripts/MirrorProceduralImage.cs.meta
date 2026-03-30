@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: f1c1532d4b9335d4ca4b4d2f41fe8adc
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 338646
+  packageName: Flexible UI Suite - Procedural UI, UI Blur, And More!
+  packageVersion: Image 2.4.3 + Blur 1.2.1
+  assetPath: Assets/Plugins/FlexibleUI/FlexibleImage/Scripts/MirrorProceduralImage.cs
+  uploadId: 885100

@@ -29,6 +29,7 @@ public class PlayerMotor : MonoBehaviour
 
     [Header("Orientation")]
     [SerializeField] private Transform movementReference;
+    [SerializeField] private OrthographicFollowCamera orbitCamera;
 
     [Header("Input")]
     [SerializeField] private InputActionAsset inputActions;
@@ -57,6 +58,10 @@ public class PlayerMotor : MonoBehaviour
     private void Awake()
     {
         characterController = GetComponent<CharacterController>();
+        if (orbitCamera == null && movementReference != null)
+            orbitCamera = movementReference.GetComponent<OrthographicFollowCamera>();
+        if (orbitCamera == null)
+            orbitCamera = FindAnyObjectByType<OrthographicFollowCamera>();
         ResolveInputActions();
     }
 
@@ -74,6 +79,14 @@ public class PlayerMotor : MonoBehaviour
 
     private void Update()
     {
+        if (transform.position.y < -100f)
+        {
+            characterController.enabled = false;
+            transform.position = new Vector3(10f, 100f, 10f);
+            characterController.enabled = true;
+            velocity.y = 0f;
+        }
+
         ReadInput();
         if (inDecorateMode)
         {
@@ -108,49 +121,33 @@ public class PlayerMotor : MonoBehaviour
 
     private void ReadInput()
     {
-        // Prefer the configured Input System asset when it exists. Fallback keyboard input keeps the capsule usable
-        // even before the action asset is wired in the inspector.
-        bool keyboardUnavailable = Keyboard.current == null;
-
+        // Prefer the configured Input System asset when it exists. Direct keyboard/gamepad fallback keeps the
+        // capsule usable even before the action asset is wired in the inspector.
         if (moveAction != null)
         {
             moveInput = moveAction.ReadValue<Vector2>();
-
-            if (keyboardUnavailable)
-            {
-                Vector2 legacyMove = ReadLegacyMove();
-                if (legacyMove.sqrMagnitude > 0f)
-                {
-                    moveInput = legacyMove;
-                }
-            }
-        }
-        else if (Keyboard.current != null)
-        {
-            moveInput = ReadKeyboardMove();
         }
         else
         {
-            moveInput = ReadLegacyMove();
+            moveInput = ReadDirectMoveFallback();
         }
 
         bool pressedJump;
         if (jumpAction != null)
         {
             pressedJump = jumpAction.WasPressedThisFrame();
-
-            if (!pressedJump && keyboardUnavailable)
-            {
-                pressedJump = UnityEngine.Input.GetKeyDown(KeyCode.Space);
-            }
         }
         else if (Keyboard.current != null)
         {
             pressedJump = Keyboard.current.spaceKey.wasPressedThisFrame;
         }
+        else if (Gamepad.current != null)
+        {
+            pressedJump = Gamepad.current.buttonSouth.wasPressedThisFrame;
+        }
         else
         {
-            pressedJump = UnityEngine.Input.GetKeyDown(KeyCode.Space);
+            pressedJump = false;
         }
 
         if (pressedJump)
@@ -198,7 +195,12 @@ public class PlayerMotor : MonoBehaviour
         Vector3 referenceForward;
         Vector3 referenceRight;
 
-        if (movementReference != null)
+        if (orbitCamera != null)
+        {
+            referenceForward = orbitCamera.PlanarForward;
+            referenceRight = new Vector3(referenceForward.z, 0f, -referenceForward.x);
+        }
+        else if (movementReference != null)
         {
             referenceForward = movementReference.forward;
             referenceRight = movementReference.right;
@@ -223,46 +225,43 @@ public class PlayerMotor : MonoBehaviour
         return desiredMove;
     }
 
-    private static Vector2 ReadKeyboardMove()
+    private static Vector2 ReadDirectMoveFallback()
     {
-        if (Keyboard.current == null)
+        Vector2 value = Vector2.zero;
+
+        if (Keyboard.current != null)
         {
-            return Vector2.zero;
+            float horizontal = 0f;
+            float vertical = 0f;
+
+            if (Keyboard.current.aKey.isPressed)
+            {
+                horizontal -= 1f;
+            }
+
+            if (Keyboard.current.dKey.isPressed)
+            {
+                horizontal += 1f;
+            }
+
+            if (Keyboard.current.sKey.isPressed)
+            {
+                vertical -= 1f;
+            }
+
+            if (Keyboard.current.wKey.isPressed)
+            {
+                vertical += 1f;
+            }
+
+            value = new Vector2(horizontal, vertical);
         }
 
-        float horizontal = 0f;
-        float vertical = 0f;
-
-        if (Keyboard.current.aKey.isPressed)
+        if (value.sqrMagnitude < 0.0001f && Gamepad.current != null)
         {
-            horizontal -= 1f;
+            value = Gamepad.current.leftStick.ReadValue();
         }
 
-        if (Keyboard.current.dKey.isPressed)
-        {
-            horizontal += 1f;
-        }
-
-        if (Keyboard.current.sKey.isPressed)
-        {
-            vertical -= 1f;
-        }
-
-        if (Keyboard.current.wKey.isPressed)
-        {
-            vertical += 1f;
-        }
-
-        Vector2 value = new Vector2(horizontal, vertical);
-        return value.sqrMagnitude > 1f ? value.normalized : value;
-    }
-
-    private static Vector2 ReadLegacyMove()
-    {
-        // This fallback keeps the prototype controllable even if the new Input System keyboard device is unavailable.
-        float horizontal = UnityEngine.Input.GetAxisRaw("Horizontal");
-        float vertical = UnityEngine.Input.GetAxisRaw("Vertical");
-        Vector2 value = new Vector2(horizontal, vertical);
         return value.sqrMagnitude > 1f ? value.normalized : value;
     }
 

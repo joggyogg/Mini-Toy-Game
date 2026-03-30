@@ -19,26 +19,44 @@ public class OrthographicFollowCamera : MonoBehaviour
 
     [Header("Follow")]
     [SerializeField] private Transform playerTarget;
-    [SerializeField] private float followDistance = 8f;
-    [SerializeField] private float followHeight = 8f;
+    [SerializeField] private float followDistance = 25f;
+    [SerializeField] private float followHeight = 25f;
     [SerializeField] private float positionSmoothTime = 0.12f;
 
     [Header("Rotation")]
-    [SerializeField] private float baseYawDegrees = 45f;
+    [SerializeField] private float baseYawDegrees = 0f;
     [SerializeField] private float basePitchDegrees = DefaultPitchDegrees;
     [SerializeField] private float maxRotationDegrees = DefaultRotationLimitDegrees;
     [SerializeField] private float rotationSharpness = 10f;
+
+    [Header("Orbit")]
+    [SerializeField] private float orbitStepDegrees = 90f;
+    [SerializeField] private float orbitSmoothTime = 0.25f;
 
     [Header("Cursor Projection")]
     [SerializeField] private float focusPlaneHeight = 0f;
 
     private Camera attachedCamera;
     private Vector3 followVelocity;
+    private float targetYaw;
+    private float yawVelocity;
 
     private void Awake()
     {
         attachedCamera = GetComponent<Camera>();
         attachedCamera.orthographic = true;
+        targetYaw = baseYawDegrees;
+    }
+
+    private void Update()
+    {
+        if (Keyboard.current != null)
+        {
+            if (Keyboard.current.eKey.wasPressedThisFrame)
+                targetYaw += orbitStepDegrees;
+            if (Keyboard.current.qKey.wasPressedThisFrame)
+                targetYaw -= orbitStepDegrees;
+        }
     }
 
     private void LateUpdate()
@@ -47,6 +65,8 @@ public class OrthographicFollowCamera : MonoBehaviour
         {
             return;
         }
+
+        baseYawDegrees = Mathf.SmoothDampAngle(baseYawDegrees, targetYaw, ref yawVelocity, orbitSmoothTime);
 
         Vector3 desiredPosition = GetDesiredCameraPosition();
         transform.position = Vector3.SmoothDamp(transform.position, desiredPosition, ref followVelocity, positionSmoothTime);
@@ -69,6 +89,9 @@ public class OrthographicFollowCamera : MonoBehaviour
     {
         return GetRotationFromYawPitch(baseYawDegrees, basePitchDegrees);
     }
+
+    /// <summary>The horizontal forward direction of the current orbit angle, suitable for use as a movement reference.</summary>
+    public Vector3 PlanarForward => GetPlanarViewForward();
 
     private Vector3 GetPlanarViewForward()
     {

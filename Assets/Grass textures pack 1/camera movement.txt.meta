@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 40c1b22fcb92214408c1677a8d7a8374
+timeCreated: 1562671584
+licenseType: Store
+TextScriptImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 150218
+  packageName: Untitled
+  packageVersion: 1.0
+  assetPath: Assets/Grass textures pack 1/camera movement.txt
+  uploadId: 320208

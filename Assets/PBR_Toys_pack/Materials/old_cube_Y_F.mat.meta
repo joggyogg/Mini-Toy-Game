@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: dc488b20f1220f846902e31884c37b2c
+timeCreated: 1484741440
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Materials/old_cube_Y_F.mat
+  uploadId: 161120

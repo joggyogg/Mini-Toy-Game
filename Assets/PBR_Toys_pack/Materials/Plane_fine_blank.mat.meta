@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 6ef7c01cb4daefa46a512d7c22b9c985
+timeCreated: 1484742068
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Materials/Plane_fine_blank.mat
+  uploadId: 161120
