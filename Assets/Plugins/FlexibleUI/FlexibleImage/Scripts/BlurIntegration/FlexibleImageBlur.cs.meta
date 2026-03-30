@@ -1,0 +1,9 @@
+fileFormatVersion: 2
+guid: 1e16d5e5350b95f46bf0f16987b61a68
+AssetOrigin:
+  serializedVersion: 1
+  productId: 338646
+  packageName: Flexible UI Suite - Procedural UI, UI Blur, And More!
+  packageVersion: Image 2.4.3 + Blur 1.2.1
+  assetPath: Assets/Plugins/FlexibleUI/FlexibleImage/Scripts/BlurIntegration/FlexibleImageBlur.cs
+  uploadId: 885100

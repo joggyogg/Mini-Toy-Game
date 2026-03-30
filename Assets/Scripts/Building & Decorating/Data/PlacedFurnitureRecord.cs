@@ -1,6 +1,6 @@
 /// <summary>
 /// Plain-English purpose:
-/// Lightweight record kept by BuildModeController for each piece of furniture that
+/// Lightweight record kept by FurnitureSpawner for each piece of furniture that
 /// has been placed on the terrain grid during this decorate session.
 /// PlacementSolver reads these to avoid placing new furniture on occupied cells.
 /// </summary>

@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 71d0d7e8c0a867c40ba9134078f48d25
+ShaderImporter:
+  externalObjects: {}
+  defaultTextures: []
+  nonModifiableTextures: []
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 338646
+  packageName: Flexible UI Suite - Procedural UI, UI Blur, And More!
+  packageVersion: Image 2.4.3 + Blur 1.2.1
+  assetPath: Assets/Plugins/FlexibleUI/FlexibleBlur/Shaders/Blurs.shader
+  uploadId: 885100

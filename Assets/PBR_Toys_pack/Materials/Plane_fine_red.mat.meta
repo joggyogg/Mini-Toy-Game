@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: a206f637c9f81624580da3a9a8e9da34
+timeCreated: 1484742069
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Materials/Plane_fine_red.mat
+  uploadId: 161120

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: b1c4ca627221a3e4b9b4eb45bec2c879
+timeCreated: 1484854333
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/cylinder_blue.prefab
+  uploadId: 161120

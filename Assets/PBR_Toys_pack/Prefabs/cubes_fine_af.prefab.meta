@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 07ffad243b0c2944ba431e93f2850709
+timeCreated: 1484853989
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/cubes_fine_af.prefab
+  uploadId: 161120

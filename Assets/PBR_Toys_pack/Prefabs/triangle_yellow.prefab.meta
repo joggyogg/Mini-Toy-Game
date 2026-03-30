@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 9d737259194e5e1429164a5f7975917f
+timeCreated: 1484854360
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/triangle_yellow.prefab
+  uploadId: 161120

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: e0d36b4749d2443488b0f2aa59b3b5c9
+timeCreated: 1484854356
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/rectangle_blank.prefab
+  uploadId: 161120
