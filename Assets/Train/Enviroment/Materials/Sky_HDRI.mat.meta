@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 65171c086b393a34daf54053da2602b6
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/Enviroment/Materials/Sky_HDRI.mat
+  uploadId: 818654

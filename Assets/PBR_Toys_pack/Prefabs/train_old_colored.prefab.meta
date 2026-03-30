@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: c1f1e92b35c71b447a98e108e263b823
+timeCreated: 1484853608
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/train_old_colored.prefab
+  uploadId: 161120

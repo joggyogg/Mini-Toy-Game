@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 28af403f6ceeaeb4f8ca82d727d0f3a7
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 9100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/FlyingScotsman/FlyingScotsman.controller
+  uploadId: 818654

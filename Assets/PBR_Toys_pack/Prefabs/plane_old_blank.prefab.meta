@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 9344c34a91c5b3b4bb27c4898b361c3b
+timeCreated: 1484853735
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/plane_old_blank.prefab
+  uploadId: 161120

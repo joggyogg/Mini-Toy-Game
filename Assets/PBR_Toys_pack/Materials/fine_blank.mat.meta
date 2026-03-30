@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 6c8274ba94bdd734094321131a988aff
+timeCreated: 1484852588
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Materials/fine_blank.mat
+  uploadId: 161120

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: cd8727f5b6a268e428caf6fbce23fabb
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/TrainSignal/Prefabs/SignalBoxOld.prefab
+  uploadId: 818654

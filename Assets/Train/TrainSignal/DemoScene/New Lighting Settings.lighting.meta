@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: e2f73f2cfbdaae74381db3885045b39a
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 4890085278179872738
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/TrainSignal/DemoScene/New Lighting Settings.lighting
+  uploadId: 818654

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: f9e920a39505ced439f95a3df35c6911
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 338646
+  packageName: Flexible UI Suite - Procedural UI, UI Blur, And More!
+  packageVersion: Image 2.4.3 + Blur 1.2.1
+  assetPath: Assets/Plugins/FlexibleUI/Demos/FlexibleBlur/Presets/DemoPreset2.asset
+  uploadId: 885100

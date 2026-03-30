@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: bc861aedb8b360c4bbc5a549f55d120b
+timeCreated: 1484854019
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/cubes_old_gl.prefab
+  uploadId: 161120

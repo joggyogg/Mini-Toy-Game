@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: dd941e966f668714d8201a0bb87caaf6
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 112000000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/TrainTrack/DemoScene/TrainTrack/LightingData.asset
+  uploadId: 818654

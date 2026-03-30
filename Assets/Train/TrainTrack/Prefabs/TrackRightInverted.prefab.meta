@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: e1908086559546248863d2b96ca5759a
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/TrainTrack/Prefabs/TrackRightInverted.prefab
+  uploadId: 818654

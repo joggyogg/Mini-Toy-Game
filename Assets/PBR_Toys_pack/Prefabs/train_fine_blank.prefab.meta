@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 71dc17301bf322c408c9a77e4d7e3d95
+timeCreated: 1484853594
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/train_fine_blank.prefab
+  uploadId: 161120

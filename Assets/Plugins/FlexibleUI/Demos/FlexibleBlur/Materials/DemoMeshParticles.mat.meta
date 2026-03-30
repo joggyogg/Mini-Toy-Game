@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 8f22e9d14a931d84c8b6c0a1f7b1dd9f
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 338646
+  packageName: Flexible UI Suite - Procedural UI, UI Blur, And More!
+  packageVersion: Image 2.4.3 + Blur 1.2.1
+  assetPath: Assets/Plugins/FlexibleUI/Demos/FlexibleBlur/Materials/DemoMeshParticles.mat
+  uploadId: 885100

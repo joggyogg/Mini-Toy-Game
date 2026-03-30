@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 56d9afc13ddf51b4dabf518230f08d43
+timeCreated: 1484904558
+licenseType: Store
+NativeFormatImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 81054
+  packageName: PBR Toys pack
+  packageVersion: 1.0
+  assetPath: Assets/PBR_Toys_pack/Prefabs/pyramid.prefab
+  uploadId: 161120

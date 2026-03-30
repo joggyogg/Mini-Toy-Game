@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 8738c8c16d5bc1b47a22312bb8d90ffb
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/Enviroment/Materials/Gravel.mat
+  uploadId: 818654

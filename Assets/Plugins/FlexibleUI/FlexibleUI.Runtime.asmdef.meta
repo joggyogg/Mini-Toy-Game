@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: c0e37c852e10dfe468c75334a7f08d3a
+AssemblyDefinitionImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 338646
+  packageName: Flexible UI Suite - Procedural UI, UI Blur, And More!
+  packageVersion: Image 2.4.3 + Blur 1.2.1
+  assetPath: Assets/Plugins/FlexibleUI/FlexibleUI.Runtime.asmdef
+  uploadId: 885100
