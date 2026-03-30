@@ -28,6 +28,9 @@ public class Locomotive : MonoBehaviour
     [Tooltip("Which local axis of the model points forward.")]
     [SerializeField] private ForwardAxis forwardAxis = ForwardAxis.PosZ;
 
+    [Tooltip("Vertical offset of the model body above the bogie midpoint. Use this to align the mesh visually on the track.")]
+    [SerializeField] private float modelYOffset = 0f;
+
     [Header("Coupler")]
     [Tooltip("Arc-length distance from the rear bogie to the rear coupler hook.")]
     [SerializeField] private float rearCouplerOffset = 0.3f;
@@ -144,7 +147,7 @@ public class Locomotive : MonoBehaviour
         Vector3 fwd = frontPos - rearPos;
         if (fwd.sqrMagnitude < 0.0001f) return;
 
-        transform.position = (frontPos + rearPos) * 0.5f;
+        transform.position = (frontPos + rearPos) * 0.5f + Vector3.up * modelYOffset;
         transform.rotation = Quaternion.LookRotation(fwd, Vector3.up)
                            * AxisCorrections[(int)forwardAxis];
     }
@@ -176,9 +179,9 @@ public class Locomotive : MonoBehaviour
         }
         else
         {
-            // Prefab editing: estimate from transform.
+            // Prefab editing: bogies sit at model position minus modelYOffset.
             Vector3 fwd    = ModelForward();
-            Vector3 centre = transform.position + Vector3.up * heightOffset;
+            Vector3 centre = transform.position + Vector3.up * (heightOffset - modelYOffset);
             frontPos = centre + fwd * (bogieSpacing * 0.5f);
             rearPos  = centre - fwd * (bogieSpacing * 0.5f);
         }
