@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: d3c47dd90bea4754fad3804c720e210a
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/TrainSignal/Materials/CrossingOldMat.mat
+  uploadId: 818654

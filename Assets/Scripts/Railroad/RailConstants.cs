@@ -5,8 +5,11 @@ using UnityEngine;
 /// </summary>
 public static class RailConstants
 {
-    /// <summary>Preset turning radii in world units (1 tile = 1 world unit). Index 0 = straight.</summary>
-    public static readonly float[] TurnRadii = { float.PositiveInfinity, 8f, 5f, 3f };
+    /// <summary>
+    /// Preset turning radii in world units. Scaled for a 16-unit bogie spacing at a 3:1 minimum ratio.
+    /// Index 0 = straight, 1 = gentle (8×), 2 = medium (5×), 3 = tight (3× — minimum safe).
+    /// </summary>
+    public static readonly float[] TurnRadii = { float.PositiveInfinity, 128f, 80f, 48f };
 
     /// <summary>Cursor angle thresholds (degrees from forward) for selecting turn radius.</summary>
     public const float StraightThresholdDeg = 5f;

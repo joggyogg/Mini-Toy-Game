@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 5f47611c965e01f4fb2783017d7a6bfd
+DefaultImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/TrainSignal/DemoScene/TrainSignal.unity
+  uploadId: 818654

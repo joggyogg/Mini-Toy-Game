@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 30e5869f04ae36b47a06063960b0baac
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/TrainSignal/Prefabs/CrossingGateOld01.prefab
+  uploadId: 818654

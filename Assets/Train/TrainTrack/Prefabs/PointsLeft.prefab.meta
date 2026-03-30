@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: e0b6aa2eef2b06449a61de0b2396d2db
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 108240
+  packageName: Animated Steam Train
+  packageVersion: 1.1
+  assetPath: Assets/Train/TrainTrack/Prefabs/PointsLeft.prefab
+  uploadId: 818654

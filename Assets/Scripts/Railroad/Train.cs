@@ -128,21 +128,49 @@ public class Train : MonoBehaviour
                            * AxisCorrections[(int)forwardAxis];
     }
 
-    private void OnDrawGizmosSelected()
+    private void OnDrawGizmos()
     {
-        if (splineContainer == null || lutDistances == null) return;
+        Vector3 frontPos, rearPos;
 
-        float frontT = DistanceToT(distance);
-        float rearT = DistanceToT(distance - bogieSpacing);
+        if (splineContainer != null && lutDistances != null)
+        {
+            // Runtime: derive positions from spline LUT.
+            float frontT = DistanceToT(distance);
+            float rearT  = DistanceToT(distance - bogieSpacing);
 
-        Vector3 frontPos = (Vector3)splineContainer.EvaluatePosition(splineIndex, frontT);
-        Vector3 rearPos = (Vector3)splineContainer.EvaluatePosition(splineIndex, rearT);
-        frontPos.y += heightOffset;
-        rearPos.y += heightOffset;
+            frontPos = (Vector3)splineContainer.EvaluatePosition(splineIndex, frontT);
+            rearPos  = (Vector3)splineContainer.EvaluatePosition(splineIndex, rearT);
+            frontPos.y += heightOffset;
+            rearPos.y  += heightOffset;
+        }
+        else
+        {
+            // Prefab editing: estimate from transform using the configured forward axis.
+            Vector3 fwd    = ModelForward();
+            Vector3 centre = transform.position + Vector3.up * heightOffset;
+            frontPos = centre + fwd * (bogieSpacing * 0.5f);
+            rearPos  = centre - fwd * (bogieSpacing * 0.5f);
+        }
 
         Gizmos.color = Color.green;
         Gizmos.DrawSphere(frontPos, 0.05f);
+        Gizmos.color = Color.red;
         Gizmos.DrawSphere(rearPos, 0.05f);
+        Gizmos.color = Color.white;
         Gizmos.DrawLine(frontPos, rearPos);
+    }
+
+    // Returns the world-space direction from the train centre toward the front bogie,
+    // matching whichever local axis is configured as the model's forward.
+    private Vector3 ModelForward()
+    {
+        return forwardAxis switch
+        {
+            ForwardAxis.PosZ => transform.forward,
+            ForwardAxis.NegZ => -transform.forward,
+            ForwardAxis.PosX => transform.right,
+            ForwardAxis.NegX => -transform.right,
+            _               => transform.forward,
+        };
     }
 }
