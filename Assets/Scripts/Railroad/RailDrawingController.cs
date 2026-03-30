@@ -38,7 +38,7 @@ public class RailDrawingController : MonoBehaviour
     [SerializeField] private RailTerrainGrader terrainGrader;
 
     [Header("Train Spawning")]
-    [Tooltip("Prefab with a Train component. Press T in Conductor mode to spawn.")]
+    [Tooltip("Prefab with a Locomotive component. Press T in Conductor mode to spawn.")]
     [SerializeField] private GameObject trainPrefab;
 
     [Header("Preview")]
@@ -141,9 +141,8 @@ public class RailDrawingController : MonoBehaviour
         if (idx < 0) return;
 
         GameObject instance = Instantiate(trainPrefab);
-        Train train = instance.GetComponent<Train>();
-        if (train != null)
-            train.PlaceOnSpline(network, idx);
+        Locomotive loco = instance.GetComponent<Locomotive>();
+        if (loco != null) loco.PlaceOnSpline(network, idx);
     }
 
     // ─── Knot Placement ─────────────────────────────────────────────────
