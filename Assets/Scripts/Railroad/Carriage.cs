@@ -40,6 +40,11 @@ public class Carriage : MonoBehaviour
     // Exposed so Locomotive.OnValidate() can walk the linked list.
     public Carriage NextCarriage => nextCarriage;
 
+    // Exposed so Locomotive can compute total consist length before positioning.
+    public float BogieSpacing => bogieSpacing;
+    public float FrontCouplerOffset => frontCouplerOffset;
+    public float RearCouplerOffset => rearCouplerOffset;
+
     // ─── Runtime State ───────────────────────────────────────────────────
 
     private Locomotive loco;
@@ -57,6 +62,11 @@ public class Carriage : MonoBehaviour
     private float RearCouplerDistance => distance - bogieSpacing - rearCouplerOffset;
 
     // ─── Called by Locomotive / previous Carriage ─────────────────────────
+
+    /// <summary>
+    /// Called by Locomotive to re-wire the chain after instantiation.
+    /// </summary>
+    public void SetNextCarriage(Carriage next) => nextCarriage = next;
 
     public void Initialize(Locomotive locomotive, float leaderRearCouplerDist)
     {

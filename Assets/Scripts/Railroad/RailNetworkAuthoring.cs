@@ -142,6 +142,68 @@ public class RailNetworkAuthoring : MonoBehaviour
         return -1;
     }
 
+    /// <summary>
+    /// Returns the index of the currently active (being-drawn) spline, or -1 if not drawing.
+    /// </summary>
+    public int ActiveSplineIndex => activeSplineIndex;
+
+    /// <summary>
+    /// Removes the spline at the given index from the container.
+    /// Adjusts activeSplineIndex if needed.
+    /// </summary>
+    public void RemoveSpline(int index)
+    {
+        if (index < 0 || index >= Container.Splines.Count) return;
+
+        var list = new List<Spline>(Container.Splines);
+        list.RemoveAt(index);
+        Container.Splines = list;
+
+        // Adjust active index.
+        if (activeSplineIndex == index)
+            activeSplineIndex = -1;
+        else if (activeSplineIndex > index)
+            activeSplineIndex--;
+    }
+
+    /// <summary>
+    /// Returns the world position of the first knot of the given spline, or null.
+    /// </summary>
+    public Vector3? GetFirstKnotWorld(int splineIndex)
+    {
+        if (splineIndex < 0 || splineIndex >= Container.Splines.Count) return null;
+        var spline = Container.Splines[splineIndex];
+        if (spline.Count == 0) return null;
+        return transform.TransformPoint(spline[0].Position);
+    }
+
+    /// <summary>
+    /// Returns the world position of the last knot of the given spline, or null.
+    /// </summary>
+    public Vector3? GetLastKnotWorld(int splineIndex)
+    {
+        if (splineIndex < 0 || splineIndex >= Container.Splines.Count) return null;
+        var spline = Container.Splines[splineIndex];
+        if (spline.Count == 0) return null;
+        return transform.TransformPoint(spline[spline.Count - 1].Position);
+    }
+
+    /// <summary>
+    /// Creates a new finished spline from the given knots (local space).
+    /// Returns the new spline's index in the container.
+    /// </summary>
+    public int AddSplineFromKnots(IReadOnlyList<BezierKnot> knots)
+    {
+        var spline = new Spline();
+        for (int i = 0; i < knots.Count; i++)
+            spline.Add(knots[i], TangentMode.Broken);
+
+        var list = new List<Spline>(Container.Splines);
+        list.Add(spline);
+        Container.Splines = list;
+        return list.Count - 1;
+    }
+
     private void StartNewSpline()
     {
         var list = new List<Spline>(Container.Splines);

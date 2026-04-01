@@ -15,6 +15,7 @@ public class TerrainNoiseGenerator : MonoBehaviour
 {
     [Header("References")]
     [SerializeField] private TerrainGridAuthoring terrainGrid;
+    [SerializeField] private Terrain[] terrains;
 
     [Header("Noise")]
     [SerializeField] private int     seed        = 0;
@@ -76,7 +77,7 @@ public class TerrainNoiseGenerator : MonoBehaviour
         {
             for (int tx = 0; tx < w; tx++)
             {
-                if (!terrainGrid.IsTileCovered(tx, tz)) continue;
+                if (!terrainGrid.IsFullTileWalkable(tx, tz)) continue;
 
                 float amplitude = 1f;
                 float frequency = 1f;
@@ -108,7 +109,7 @@ public class TerrainNoiseGenerator : MonoBehaviour
         {
             for (int tx = 0; tx < w; tx++)
             {
-                if (!terrainGrid.IsTileCovered(tx, tz)) continue;
+                if (!terrainGrid.IsFullTileWalkable(tx, tz)) continue;
                 float n = noiseRange > 0.0001f
                     ? (rawNoise[tz * w + tx] - noiseMin) / noiseRange
                     : 0f;
@@ -131,7 +132,7 @@ public class TerrainNoiseGenerator : MonoBehaviour
             {
                 for (int tx = 0; tx < w; tx++)
                 {
-                    if (!terrainGrid.IsTileCovered(tx, tz)) continue;
+                    if (!terrainGrid.IsFullTileWalkable(tx, tz)) continue;
                     int cur = levels[tz * w + tx];
 
                     // Check all 4 cardinal neighbours; reduce if neighbor is more than 1 below us.
@@ -157,16 +158,22 @@ public class TerrainNoiseGenerator : MonoBehaviour
 
         for (int tz = 0; tz < h; tz++)
             for (int tx = 0; tx < w; tx++)
-                if (terrainGrid.IsTileCovered(tx, tz))
+                if (terrainGrid.IsFullTileWalkable(tx, tz))
                 {
-                    terrainGrid.SetTileHeight(tx, tz, levels[tz * w + tx]);
-                    terrainGrid.SetTileShape(tx, tz, TileShape.Flat);
+                    int lvl = levels[tz * w + tx];
+                    terrainGrid.SetCornerHeight(tx,     tz,     lvl);
+                    terrainGrid.SetCornerHeight(tx + 1, tz,     lvl);
+                    terrainGrid.SetCornerHeight(tx,     tz + 1, lvl);
+                    terrainGrid.SetCornerHeight(tx + 1, tz + 1, lvl);
                 }
 
         // ── Step 4: Apply ─────────────────────────────────────────────────────────
 
         terrainGrid.SyncEnabledCellsFromShapes();
-        terrainGrid.ApplyToTerrains();
+
+        if (terrains != null)
+            foreach (Terrain t in terrains)
+                if (t != null) terrainGrid.ApplyToTerrain(t);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -178,7 +185,7 @@ public class TerrainNoiseGenerator : MonoBehaviour
     private int CoveredLevel(int[] levels, int w, int h, int tx, int tz)
     {
         if (tx < 0 || tx >= w || tz < 0 || tz >= h) return int.MaxValue;
-        if (!terrainGrid.IsTileCovered(tx, tz)) return int.MaxValue;
+        if (!terrainGrid.IsFullTileWalkable(tx, tz)) return int.MaxValue;
         return levels[tz * w + tx];
     }
 
@@ -186,7 +193,7 @@ public class TerrainNoiseGenerator : MonoBehaviour
     private bool ShapeEquals(int[] levels, int w, int h, int tx, int tz, TileShape shape, int expectedLevel)
     {
         if (tx < 0 || tx >= w || tz < 0 || tz >= h) return false;
-        if (!terrainGrid.IsTileCovered(tx, tz)) return false;
+        if (!terrainGrid.IsFullTileWalkable(tx, tz)) return false;
         if (levels[tz * w + tx] != expectedLevel) return false;
         return terrainGrid.GetTileShape(tx, tz) == shape;
     }
@@ -195,7 +202,7 @@ public class TerrainNoiseGenerator : MonoBehaviour
     private bool NeighborIsHigher(int[] levels, int w, int h, int tx, int tz, int myLevel)
     {
         if (tx < 0 || tx >= w || tz < 0 || tz >= h) return false;
-        if (!terrainGrid.IsTileCovered(tx, tz)) return false;
+        if (!terrainGrid.IsFullTileWalkable(tx, tz)) return false;
         return levels[tz * w + tx] == myLevel + 1;
     }
 

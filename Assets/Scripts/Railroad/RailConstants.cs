@@ -6,18 +6,16 @@ using UnityEngine;
 public static class RailConstants
 {
     /// <summary>
-    /// Preset turning radii in world units. Scaled for a 16-unit bogie spacing at a 3:1 minimum ratio.
-    /// Index 0 = straight, 1 = gentle (8×), 2 = medium (5×), 3 = tight (3× — minimum safe).
+    /// Preset turning radii in world units.
+    /// Index 0 = straight, 1 = gentle, 2 = medium, 3 = tight.
     /// </summary>
     public static readonly float[] TurnRadii = { float.PositiveInfinity, 128f, 80f, 48f };
 
-    /// <summary>Cursor angle thresholds (degrees from forward) for selecting turn radius.</summary>
-    public const float StraightThresholdDeg = 5f;
-    public const float GentleThresholdDeg   = 15f;
-    public const float TightThresholdDeg    = 30f;
+    /// <summary>Available arc sweep angles in degrees for curved segments.</summary>
+    public static readonly float[] CurveAnglesDeg = { 22.5f, 45f, 67.5f, 90f };
 
     public const float MinSegmentLength = 1f;
-    public const float MaxSegmentLength = 10f;
+    public const float MaxStraightLength = 100f;
 
     /// <summary>Maximum arc sweep per segment (radians). Keeps single-Bezier approximation accurate.</summary>
     public static readonly float MaxArcAngleRad = Mathf.PI * 0.5f; // 90°

@@ -28,6 +28,19 @@ public class RailTerrainGrader : MonoBehaviour
     /// <summary>The bed raise amount in world units.</summary>
     public float BedRaiseWorldHeight => bedRaiseLevels * TerrainGridAuthoring.LevelHeight;
 
+    /// <summary>
+    /// Snaps a world position's X/Z to the center of the nearest full tile.
+    /// Y is unchanged. Returns the original position if outside the grid.
+    /// </summary>
+    public Vector3 SnapToTileCenter(Vector3 worldPos)
+    {
+        if (terrainGrid == null) return worldPos;
+        if (!terrainGrid.TryWorldToFullTile(worldPos, out Vector2Int tile)) return worldPos;
+        if (!terrainGrid.TryGetFullTileCenterWorld(tile.x, tile.y, out Vector3 center)) return worldPos;
+        center.y = worldPos.y;
+        return center;
+    }
+
     private Terrain[] childTerrains;
 
     private void Awake()
@@ -142,6 +155,87 @@ public class RailTerrainGrader : MonoBehaviour
         foreach (Terrain t in childTerrains)
         {
             if (t != null) terrainGrid.ApplyToTerrainPartial(t, dirtyTiles);
+        }
+    }
+
+    /// <summary>
+    /// Reverses the grading around a world point — lowers the bed back down.
+    /// Mirror of GradeAroundPoint: bed corners are lowered by bedRaiseLevels,
+    /// blend zone is smoothly lowered back toward the lower level.
+    /// </summary>
+    public void UngradeAroundPoint(Vector3 worldPos)
+    {
+        if (terrainGrid == null) return;
+
+        if (!terrainGrid.TryWorldToFullTile(worldPos, out Vector2Int centerTile))
+            return;
+
+        float bedCornerRadius = bedHalfWidth + 0.5f;
+        float totalRadius = bedCornerRadius + blendWidth;
+
+        Vector2Int fullSize = terrainGrid.FullTileGridSize;
+        int totalRadiusCeil = Mathf.CeilToInt(totalRadius);
+
+        int minCx = Mathf.Max(0, centerTile.x - totalRadiusCeil);
+        int maxCx = Mathf.Min(fullSize.x, centerTile.x + totalRadiusCeil + 1);
+        int minCz = Mathf.Max(0, centerTile.y - totalRadiusCeil);
+        int maxCz = Mathf.Min(fullSize.y, centerTile.y + totalRadiusCeil + 1);
+
+        float centerCxF = centerTile.x + 0.5f;
+        float centerCzF = centerTile.y + 0.5f;
+
+        for (int cz = minCz; cz <= maxCz; cz++)
+        {
+            for (int cx = minCx; cx <= maxCx; cx++)
+            {
+                float dx = cx - centerCxF;
+                float dz = cz - centerCzF;
+                float dist = Mathf.Sqrt(dx * dx + dz * dz);
+
+                if (dist <= bedCornerRadius)
+                {
+                    int current = terrainGrid.GetCornerHeight(cx, cz);
+                    int lowered = Mathf.Max(0, current - bedRaiseLevels);
+                    terrainGrid.SetCornerHeight(cx, cz, lowered);
+                }
+                else if (dist <= totalRadius)
+                {
+                    float blendT = (dist - bedCornerRadius) / blendWidth;
+                    blendT = blendT * blendT * (3f - 2f * blendT);
+
+                    int current = terrainGrid.GetCornerHeight(cx, cz);
+                    int lowered = Mathf.Max(0, current - bedRaiseLevels);
+                    int blended = Mathf.RoundToInt(Mathf.Lerp(lowered, current, blendT));
+                    terrainGrid.SetCornerHeight(cx, cz, Mathf.Max(0, blended));
+                }
+            }
+        }
+
+        RectInt dirtyTiles = new RectInt(
+            minCx - 1, minCz - 1,
+            (maxCx - minCx) + 3, (maxCz - minCz) + 3
+        );
+        terrainGrid.SyncEnabledCellsFromShapes(dirtyTiles);
+
+        foreach (Terrain t in childTerrains)
+        {
+            if (t != null) terrainGrid.ApplyToTerrainPartial(t, dirtyTiles);
+        }
+    }
+
+    /// <summary>
+    /// Reverses terrain grading along a line segment. Mirror of GradeAlongSegment.
+    /// </summary>
+    public void UngradeAlongSegment(Vector3 from, Vector3 to)
+    {
+        float dist = Vector3.Distance(from, to);
+        int sampleCount = Mathf.Max(2, Mathf.CeilToInt(dist / 1f));
+
+        for (int i = 0; i <= sampleCount; i++)
+        {
+            float t = (float)i / sampleCount;
+            Vector3 point = Vector3.Lerp(from, to, t);
+            UngradeAroundPoint(point);
         }
     }
 }

@@ -99,26 +99,40 @@ public class HumanPerimeterWaypointData : MonoBehaviour
 
         Vector3[] corners = { tl, tr, br, bl };
 
+        // Outward-facing yaw per edge (clockwise: N, E, S, W).
+        float[] edgeYaw = { 0f, 90f, 180f, 270f };
+
+        // Corner diagonal yaw (NW, NE, SE, SW) — midpoint between adjacent edges.
+        float[] cornerYaw = { 315f, 45f, 135f, 225f };
+
+        const float cornerSpread = 35f;
+
         // Walk perimeter clockwise: for each edge, emit corner then evenly spaced edge waypoints
         for (int edge = 0; edge < 4; edge++)
         {
             Vector3 start = corners[edge];
             Vector3 end = corners[(edge + 1) % 4];
 
-            // Corner waypoint
-            AddWaypoint(start, true);
+            // Corner waypoint with diagonal facing and ±35° intermediaries.
+            float diag = cornerYaw[edge];
+            AddWaypoint(start, true,
+                Quaternion.Euler(0f, diag, 0f),
+                Quaternion.Euler(0f, diag - cornerSpread, 0f),
+                Quaternion.Euler(0f, diag + cornerSpread, 0f));
 
-            // Edge waypoints (evenly spaced between corners, exclusive of corners themselves)
+            // Edge waypoints face outward along the edge normal.
+            Quaternion edgeFacing = Quaternion.Euler(0f, edgeYaw[edge], 0f);
             for (int i = 1; i <= waypointsPerEdge; i++)
             {
                 float t = (float)i / (waypointsPerEdge + 1);
                 Vector3 pos = Vector3.Lerp(start, end, t);
-                AddWaypoint(pos, false);
+                AddWaypoint(pos, false, edgeFacing, Quaternion.identity, Quaternion.identity);
             }
         }
     }
 
-    private void AddWaypoint(Vector3 xzPosition, bool isCorner)
+    private void AddWaypoint(Vector3 xzPosition, bool isCorner,
+        Quaternion facing, Quaternion facingA, Quaternion facingB)
     {
         // Raycast downward to find floor height
         float floorY = xzPosition.y;
@@ -133,10 +147,10 @@ public class HumanPerimeterWaypointData : MonoBehaviour
         waypoints.Add(new HumanWaypoint
         {
             worldPosition = worldPos,
-            facingRotation = Quaternion.identity,
+            facingRotation = facing,
             isCorner = isCorner,
-            cornerFacingA = Quaternion.identity,
-            cornerFacingB = Quaternion.identity
+            cornerFacingA = facingA,
+            cornerFacingB = facingB
         });
     }
 

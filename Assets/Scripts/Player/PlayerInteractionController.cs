@@ -28,10 +28,7 @@ public class PlayerInteractionController : MonoBehaviour
     [SerializeField] private bool unlockCursorWhileMenuOpen = true;
 
     [Header("Input")]
-    [SerializeField] private InputActionAsset inputActions;
-    [SerializeField] private string playerActionMapName = "Player";
-    [SerializeField] private string menuToggleActionName = "Interact";
-    [SerializeField] private Key fallbackMenuToggleKey = Key.Tab;
+    [SerializeField] private Key menuToggleKey = Key.Tab;
 
     [Header("Events")]
     [SerializeField] private UnityEvent onMenuOpened;
@@ -40,7 +37,6 @@ public class PlayerInteractionController : MonoBehaviour
     [SerializeField] private UnityEvent onDecorateRequested;
     [SerializeField] private UnityEvent onConductorRequested;
 
-    private InputAction menuToggleAction;
     private bool menuOpen;
     private CursorLockMode cachedCursorLockMode = CursorLockMode.None;
     private bool cachedCursorVisible;
@@ -57,13 +53,11 @@ public class PlayerInteractionController : MonoBehaviour
         cachedCursorVisible = Cursor.visible;
         hasCachedCursorState = true;
 
-        ResolveInputAction();
         ApplyMenuState(openMenuOnStart, true);
     }
 
     private void OnEnable()
     {
-        menuToggleAction?.Enable();
         if (terraformButton != null) terraformButton.onClick.AddListener(OnTerraformClicked);
         if (decorateButton != null) decorateButton.onClick.AddListener(OnDecorateClicked);
         if (conductorButton != null) conductorButton.onClick.AddListener(OnConductorClicked);
@@ -71,7 +65,6 @@ public class PlayerInteractionController : MonoBehaviour
 
     private void OnDisable()
     {
-        menuToggleAction?.Disable();
         if (terraformButton != null) terraformButton.onClick.RemoveListener(OnTerraformClicked);
         if (decorateButton != null) decorateButton.onClick.RemoveListener(OnDecorateClicked);
         if (conductorButton != null) conductorButton.onClick.RemoveListener(OnConductorClicked);
@@ -125,28 +118,9 @@ public class PlayerInteractionController : MonoBehaviour
 
     // ── Input helpers ─────────────────────────────────────────────────────────
 
-    private void ResolveInputAction()
-    {
-        if (inputActions == null) { menuToggleAction = null; return; }
-        InputActionMap playerMap = inputActions.FindActionMap(playerActionMapName, false);
-        if (playerMap == null) { menuToggleAction = null; return; }
-        menuToggleAction = playerMap.FindAction(menuToggleActionName, false);
-    }
-
     private bool WasMenuTogglePressedThisFrame()
     {
-        if (menuToggleAction != null)
-        {
-            if (menuToggleAction.WasPerformedThisFrame() || menuToggleAction.WasPressedThisFrame())
-                return true;
-        }
-
-        return WasFallbackMenuTogglePressedThisFrame();
-    }
-
-    private bool WasFallbackMenuTogglePressedThisFrame()
-    {
-        if (Keyboard.current != null && Keyboard.current[fallbackMenuToggleKey].wasPressedThisFrame)
+        if (Keyboard.current != null && Keyboard.current[menuToggleKey].wasPressedThisFrame)
             return true;
         return Gamepad.current != null && Gamepad.current.startButton.wasPressedThisFrame;
     }

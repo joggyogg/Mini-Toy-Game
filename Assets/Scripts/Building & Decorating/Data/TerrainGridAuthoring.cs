@@ -343,6 +343,29 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
     }
 
     /// <summary>
+    /// Snaps a world position to the nearest tile-edge intersection (grid line crossing).
+    /// Tile edges are at integer tile boundaries: 0, 1, 2, ... in grid-local space.
+    /// Y is preserved from the input.
+    /// </summary>
+    public Vector3 SnapToNearestTileEdge(Vector3 worldPos)
+    {
+        Vector3 offset = worldPos - transform.position;
+        float localX = Vector3.Dot(offset, transform.right) - gridOriginLocalOffset.x;
+        float localZ = Vector3.Dot(offset, transform.forward) - gridOriginLocalOffset.z;
+
+        // Round to nearest integer tile boundary.
+        float snappedLocalX = Mathf.Round(localX / FullTileWorldSize) * FullTileWorldSize;
+        float snappedLocalZ = Mathf.Round(localZ / FullTileWorldSize) * FullTileWorldSize;
+
+        Vector3 result = transform.position
+            + transform.right   * (gridOriginLocalOffset.x + snappedLocalX)
+            + transform.up      * gridOriginLocalOffset.y
+            + transform.forward * (gridOriginLocalOffset.z + snappedLocalZ);
+        result.y = worldPos.y;
+        return result;
+    }
+
+    /// <summary>
     /// Finds the nearest walkable full tile to a world position using a BFS shell search.
     /// Used by PlayerMotor when entering decorate mode to snap the player to the grid.
     /// </summary>

@@ -27,6 +27,16 @@ public class WorldCanvasFaceCamera : MonoBehaviour
     private void LateUpdate()
     {
         Camera activeCamera = targetCamera != null ? targetCamera : Camera.main;
+
+        // Camera.main requires the "MainCamera" tag. Fall back to any enabled camera.
+        if (activeCamera == null)
+        {
+            foreach (Camera cam in Camera.allCameras)
+            {
+                if (cam.isActiveAndEnabled) { activeCamera = cam; break; }
+            }
+        }
+
         if (activeCamera == null)
         {
             return;

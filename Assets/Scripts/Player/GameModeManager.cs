@@ -1,6 +1,5 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
-using UnityEngine.Serialization;
 
 /// <summary>
 /// Attach to the Player. Manages transitions between toy mode and three human sub-modes:
@@ -23,12 +22,11 @@ public class GameModeManager : MonoBehaviour
     [SerializeField] private TerrainBrushOverlay terrainBrushOverlay;
     [SerializeField] private TerrainEditController terrainEditController;
     [SerializeField] private HumanFurniturePlacer humanFurniturePlacer;
-    [FormerlySerializedAs("buildModeController")]
-    [SerializeField] private FurnitureSpawner furnitureSpawner;
     [SerializeField] private RailDrawingController railDrawingController;
 
     [Header("UI Panels")]
     [SerializeField] private GameObject terraformPanel;
+    [SerializeField] private GameObject decoratePanel;
     [SerializeField] private GameObject conductorPanel;
 
     [Header("Toggle")]
@@ -75,8 +73,9 @@ public class GameModeManager : MonoBehaviour
         if (terrainBrushOverlay != null) terrainBrushOverlay.gameObject.SetActive(true);
         if (terraformPanel != null) terraformPanel.SetActive(true);
 
-        // Disable furniture tools
+        // Disable other tools
         if (humanFurniturePlacer != null) humanFurniturePlacer.enabled = false;
+        if (railDrawingController != null) railDrawingController.enabled = false;
     }
 
     public void EnterHumanDecorateMode()
@@ -93,12 +92,13 @@ public class GameModeManager : MonoBehaviour
 
         currentSubMode = HumanSubMode.Decorate;
 
-        // Disable terraform tools
+        // Disable other tools
         if (terrainBrushOverlay != null) terrainBrushOverlay.gameObject.SetActive(false);
+        if (railDrawingController != null) railDrawingController.enabled = false;
 
         // Enable furniture tools
         if (humanFurniturePlacer != null) humanFurniturePlacer.enabled = true;
-        if (furnitureSpawner != null) furnitureSpawner.EnterDecorateMode(humanCamera);
+        if (decoratePanel != null) decoratePanel.SetActive(true);
     }
 
     public void SetToyMode()
@@ -129,8 +129,11 @@ public class GameModeManager : MonoBehaviour
 
         currentSubMode = HumanSubMode.Conductor;
 
+        // Disable other tools
         if (terrainBrushOverlay != null) terrainBrushOverlay.gameObject.SetActive(false);
         if (humanFurniturePlacer != null) humanFurniturePlacer.enabled = false;
+
+        // Enable conductor tools
         if (railDrawingController != null) railDrawingController.enabled = true;
         if (conductorPanel != null) conductorPanel.SetActive(true);
     }
@@ -181,7 +184,7 @@ public class GameModeManager : MonoBehaviour
     private void DeactivateDecorate()
     {
         if (humanFurniturePlacer != null) humanFurniturePlacer.enabled = false;
-        if (furnitureSpawner != null) furnitureSpawner.ExitDecorateMode();
+        if (decoratePanel != null) decoratePanel.SetActive(false);
     }
 
     private void DeactivateConductor()

@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
+using UnityEngine.UI;
 
 /// <summary>
 /// 3D furniture placement controller for human (perspective) mode.
@@ -15,6 +16,12 @@ public class HumanFurniturePlacer : MonoBehaviour
     [SerializeField] private Camera sourceCamera;
     [SerializeField] private TerrainGridAuthoring terrain;
     [SerializeField] private FurnitureSpawner buildController;
+
+    [Header("Catalog")]
+    [SerializeField] private FurnitureCatalog catalog;
+    [SerializeField] private FurnitureCatalogButton buttonPrefab;
+    [SerializeField] private Transform buttonContainer;
+    [SerializeField] private ScrollRect scrollRect;
 
     [Header("Raycasting")]
     [SerializeField] private LayerMask furnitureAndTerrainLayer = ~0;
@@ -45,14 +52,56 @@ public class HumanFurniturePlacer : MonoBehaviour
     private float surfaceExitTime;
     private Vector3[] lastValidChildPositions = System.Array.Empty<Vector3>();
 
+    // ── Catalog buttons ──
+    private readonly List<FurnitureCatalogButton> spawnedButtons = new List<FurnitureCatalogButton>();
+
     /// <summary>True while the player is actively dragging a piece of furniture.</summary>
     public bool IsDragging => isDragging;
 
     // ── Unity Messages ─────────────────────────────────────────────────────────
 
+    private void OnEnable()
+    {
+        PopulateCatalog();
+    }
+
     private void OnDisable()
     {
         CancelDrag();
+        ClearCatalogButtons();
+    }
+
+    // ── Catalog ───────────────────────────────────────────────────────────────────
+
+    private void PopulateCatalog()
+    {
+        ClearCatalogButtons();
+
+        if (catalog == null || buttonPrefab == null || buttonContainer == null) return;
+
+        foreach (FurnitureDefinition def in catalog.Items)
+        {
+            if (def == null) continue;
+            FurnitureCatalogButton btn = Instantiate(buttonPrefab, buttonContainer);
+            btn.Initialise(def, HandleCatalogSelection);
+            spawnedButtons.Add(btn);
+        }
+
+        if (scrollRect != null)
+            scrollRect.normalizedPosition = new Vector2(0f, 1f);
+    }
+
+    private void ClearCatalogButtons()
+    {
+        foreach (FurnitureCatalogButton btn in spawnedButtons)
+            if (btn != null) Destroy(btn.gameObject);
+        spawnedButtons.Clear();
+    }
+
+    private void HandleCatalogSelection(FurnitureDefinition definition, int variantIndex)
+    {
+        if (buildController != null)
+            buildController.SpawnFurniture(definition, variantIndex, sourceCamera);
     }
 
     private void Update()
