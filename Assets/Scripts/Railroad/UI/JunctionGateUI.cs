@@ -69,9 +69,17 @@ public class JunctionGateUI : MonoBehaviour
         if (_tex != null) Destroy(_tex);
     }
 
+    private Camera _cachedCam;
+
     private void LateUpdate()
     {
         if (_node == null) return;
+
+        // Cache camera reference once per frame for projection helpers.
+        _cachedCam = Camera.main;
+        if (_cachedCam == null)
+            foreach (Camera c in Camera.allCameras)
+                if (c.isActiveAndEnabled) { _cachedCam = c; break; }
 
         // Recompute screen-space orientation every frame so the wheel stays
         // aligned with the tracks regardless of camera position or heading.
@@ -87,30 +95,28 @@ public class JunctionGateUI : MonoBehaviour
     }
 
     /// <summary>
-    /// Projects the junction's principal axis direction (group 0) into screen
-    /// space and returns the resulting angle in standard math convention
-    /// (Atan2(screenY, screenX), 0 = screen-right, CCW positive).
-    /// This automatically accounts for any camera heading or pitch.
+    /// Projects world-north (Vector3.forward / +Z) into screen space.
+    /// Since junctions now use absolute world cardinals, group 0 is always north.
     /// </summary>
     private float ComputeScreenOrientRad()
     {
-        Camera cam = Camera.main;
-        if (cam == null)
-            foreach (Camera c in Camera.allCameras)
-                if (c.isActiveAndEnabled) { cam = c; break; }
+        return ComputeScreenAngleForDirection(Vector3.forward);
+    }
+
+    /// <summary>
+    /// Projects an arbitrary XZ world direction from the junction's position
+    /// into screen space and returns the angle (Atan2(screenY, screenX)).
+    /// </summary>
+    private float ComputeScreenAngleForDirection(Vector3 worldDir)
+    {
+        Camera cam = _cachedCam;
         if (cam == null) return 0f;
 
-        float worldRad = _node.junctionOrientation * Mathf.Deg2Rad;
-        // Group 0 world direction (game convention: 0° = north = +Z)
-        Vector3 worldDir = new Vector3(Mathf.Sin(worldRad), 0f, Mathf.Cos(worldRad));
-
-        // Project two world points: junction centre and a point 1 unit along group-0.
         Vector3 origin  = _node.worldPosition;
         Vector3 tip     = origin + worldDir;
         Vector3 oScreen = cam.WorldToScreenPoint(origin);
         Vector3 tScreen = cam.WorldToScreenPoint(tip);
 
-        // If either point is behind the camera, fall back to 0.
         if (oScreen.z < 0f || tScreen.z < 0f) return 0f;
 
         Vector2 dir = new Vector2(tScreen.x - oScreen.x, tScreen.y - oScreen.y);
@@ -162,37 +168,50 @@ public class JunctionGateUI : MonoBehaviour
             _pixels[y * Size + x] = c;
         }
 
-        // Pass 2 – pip dots
+        // Pass 2 – pip dots at 3 fixed positions per group (left / center / right).
+        //          Positions are at fixed angular offsets from the group center in
+        //          world space, so they never drift regardless of exit angle.
+        //          Exit rank from GetGroupExits (sorted by angle) maps to position:
+        //            1 exit  → center
+        //            2 exits → left, right
+        //            3 exits → left, center, right
+        float midR = (InnerRadius + WheelRadius) * 0.5f;
+        const float pipOffsetDeg = 30f; // degrees from group center for left/right pips
+
         for (int g = 0; g < RailNode.NumDirectionGroups; g++)
         {
             var exits = _node.GetGroupExits(g);
-            if (exits == null || exits.Count == 0) continue;
+            int count = exits != null ? exits.Count : 0;
+            if (count == 0) continue;
 
-            int   active     = _node.gateIndices[g] % exits.Count;
-            float groupAngle = orientRad + g * Mathf.PI * 0.5f;
-            float midR       = (InnerRadius + WheelRadius) * 0.5f;
+            int activeIdx = _node.gateIndices[g] % count;
 
-            // Angular radius of one pip at midR, then centre-to-centre spacing
-            // = 3 pip radii (one diameter + one pip gap).
-            float pipAngR    = PipRadius / midR;
-            float pipSpacing = pipAngR * 3f;
+            // Fixed world-space directions for the 3 pip positions.
+            float centerDeg = _node.GroupCenterAngle(g);
+            float leftRad  = (centerDeg - pipOffsetDeg) * Mathf.Deg2Rad;
+            float centerRad = centerDeg * Mathf.Deg2Rad;
+            float rightRad = (centerDeg + pipOffsetDeg) * Mathf.Deg2Rad;
 
-            // Half-spread grows with exit count but is capped so the outermost
-            // pip stays at least one pip-diameter away from the adjacent group.
-            float maxHalfSpread = Mathf.PI * 0.25f - pipAngR * 2f;
-            float halfSpread    = exits.Count <= 1
-                ? 0f
-                : Mathf.Min((exits.Count - 1) * pipSpacing * 0.5f, maxHalfSpread);
+            Vector3 leftDir  = new Vector3(Mathf.Sin(leftRad),  0f, Mathf.Cos(leftRad));
+            Vector3 centerDir = new Vector3(Mathf.Sin(centerRad), 0f, Mathf.Cos(centerRad));
+            Vector3 rightDir = new Vector3(Mathf.Sin(rightRad), 0f, Mathf.Cos(rightRad));
 
-            for (int e = 0; e < exits.Count; e++)
+            // Map exits to positions by count.
+            Vector3[] pipDirs;
+            if (count == 1)
+                pipDirs = new[] { centerDir };
+            else if (count == 2)
+                pipDirs = new[] { leftDir, rightDir };
+            else
+                pipDirs = new[] { leftDir, centerDir, rightDir };
+
+            for (int p = 0; p < count; p++)
             {
-                float t     = exits.Count == 1 ? 0f : Mathf.Lerp(-1f, 1f, (float)e / (exits.Count - 1));
-                float angle = groupAngle + t * halfSpread;
-
-                float cx = 0.5f + Mathf.Cos(angle) * midR;
-                float cy = 0.5f + Mathf.Sin(angle) * midR;
-
-                FillCircle(cx, cy, PipRadius, e == active ? GroupColors[g] : ColInactivePip);
+                float screenAngle = ComputeScreenAngleForDirection(pipDirs[p]);
+                float cx = 0.5f + Mathf.Cos(screenAngle) * midR;
+                float cy = 0.5f - Mathf.Sin(screenAngle) * midR;
+                Color col = (p == activeIdx) ? GroupColors[g] : ColInactivePip;
+                FillCircle(cx, cy, PipRadius, col);
             }
         }
 

@@ -9,6 +9,14 @@ using UnityEngine.UI;
 /// Result of a snap calculation: snapped endpoint, exit tangent direction,
 /// Bezier tangent handles, and sampled arc points for preview / grading.
 /// </summary>
+public struct CompletionKnot
+{
+    public Vector3 position;
+    public Vector3 tangentIn;
+    public Vector3 tangentOut;
+    public Vector3[] gradePoints;   // arc sample points for terrain grading
+}
+
 public struct SnapResult
 {
     public Vector3 position;
@@ -21,6 +29,8 @@ public struct SnapResult
     public RailNode joinNode;      // the existing node we'd connect to (null if not a join)
     public int joinSplineIndex;    // spline index for mid-spline join (-1 = N/A)
     public bool isMidSplineJoin;   // true = need to split existing segment to create junction
+    public int cardinalGroup;      // 0=N, 1=E, 2=S, 3=W — which cardinal arm built this candidate
+    public CompletionKnot[] completionKnots; // non-null = multi-segment auto-completion
 }
 
 /// <summary>
@@ -83,7 +93,7 @@ public class RailDrawingController : MonoBehaviour
     [Header("Candidate Markers")]
     [SerializeField] private Color candidateColor = new Color(0.2f, 0.4f, 1f, 0.9f);
     [SerializeField] private Color selectedColor  = new Color(0.1f, 1f, 0.2f, 0.9f);
-    [SerializeField] private Color joinColor      = new Color(1f, 0.9f, 0.1f, 0.9f);
+    [SerializeField] private Color joinColor      = new Color(0.6f, 0.2f, 1f, 0.9f);
     [SerializeField] private float markerRadius = 0.35f;
 
     private LineRenderer previewLine;
@@ -95,10 +105,12 @@ public class RailDrawingController : MonoBehaviour
     private Vector3 drawingStartPos;
     private Vector3 drawingStartExitDir;
     private Vector3 drawingEndExitDir;
+    private int drawingStartGroupHint = -1;
+    private int drawingEndGroupHint = -1;
 
     // ─── Candidate System ────────────────────────────────────────────────
 
-    private const int MaxCandidates = 124; // 100 straight + 3 radii × 4 angles × 2 sides
+    private const int MaxCandidates = 500; // straights + all reachable curve tile centers
     private readonly List<SnapResult> candidates = new();
     private int selectedCandidate = -1;
     private readonly List<GameObject> markerPool = new();
@@ -111,6 +123,12 @@ public class RailDrawingController : MonoBehaviour
     private Material selectSelectedMat;
     private Material switchMat;
     private Material switchActiveMat;
+
+    // Cardinal direction-group materials for candidate dots.
+    private Material northMat;  // group 0 – Yellow
+    private Material eastMat;   // group 1 – Green
+    private Material southMat;  // group 2 – Blue
+    private Material westMat;   // group 3 – Orange/Red
 
     // ─── Delete Mode ─────────────────────────────────────────────────────
 
@@ -229,6 +247,16 @@ public class RailDrawingController : MonoBehaviour
         switchMat.color = new Color(0.6f, 0.2f, 1f, 0.9f);
         switchActiveMat = new Material(markerShader);
         switchActiveMat.color = new Color(0.8f, 0.3f, 1f, 0.9f);
+
+        // Cardinal direction-group materials (match JunctionGateUI.GroupColors).
+        northMat = new Material(markerShader);
+        northMat.color = new Color(1.00f, 0.85f, 0.10f, 0.9f);  // Yellow
+        eastMat = new Material(markerShader);
+        eastMat.color = new Color(0.10f, 0.70f, 0.15f, 0.9f);   // Green
+        southMat = new Material(markerShader);
+        southMat.color = new Color(0.10f, 0.50f, 0.85f, 0.9f);  // Blue
+        westMat = new Material(markerShader);
+        westMat.color = new Color(0.95f, 0.30f, 0.10f, 0.9f);   // Orange/Red
         switchPathMat = new Material(Shader.Find("Sprites/Default"));
         switchPathMat.color = new Color(0.1f, 1f, 0.2f, 0.9f);
         placeMat = new Material(markerShader);
@@ -451,6 +479,31 @@ public class RailDrawingController : MonoBehaviour
             marker.SetActive(false);
             markerPool.Add(marker);
         }
+    }
+
+    /// <summary>
+    /// Computes cardinal group index (0=N, 1=E, 2=S, 3=W) from a direction vector.
+    /// </summary>
+    private static int ComputeCardinalGroup(Vector3 dir)
+    {
+        float angle = Mathf.Atan2(dir.x, dir.z) * Mathf.Rad2Deg; // 0=+Z
+        angle = ((angle % 360f) + 360f) % 360f;
+        return Mathf.FloorToInt(((angle + 45f) % 360f) / 90f);
+    }
+
+    /// <summary>
+    /// Returns cardinal-group material by index: 0=North(Yellow), 1=East(Green), 2=South(Blue), 3=West(Orange).
+    /// </summary>
+    private Material GetCardinalGroupMaterial(int group)
+    {
+        return group switch
+        {
+            0 => northMat,
+            1 => eastMat,
+            2 => southMat,
+            3 => westMat,
+            _ => candidateMat
+        };
     }
 
     private void DeleteKnot(int splineIndex, int knotIndex)
@@ -1215,20 +1268,33 @@ public class RailDrawingController : MonoBehaviour
         }
 
         // Snap to an existing node if close enough (start a branch from existing track).
+        bool snappedToNode = false;
         if (railGraph != null)
         {
             RailNode node = railGraph.FindNodeAtPosition(worldPos, 0.6f);
             if (node != null && node.CanAddConnection)
             {
                 worldPos = node.worldPosition;
+                snappedToNode = true;
                 Debug.Log($"[RailDrawing] First knot snapped to existing node at {worldPos}");
             }
+        }
+
+        // Reject placement if too close to an existing rail (min 7 tiles) unless
+        // we snapped to an existing node (branching is always allowed).
+        if (!snappedToNode && FindSplineNearPosition(worldPos, 7f) >= 0)
+        {
+            knotCount--;
+            Debug.Log($"[RailDrawing] First knot rejected — too close to existing rail ({worldPos})");
+            return;
         }
 
         network.AddKnotExplicit(worldPos, Vector3.zero, Vector3.zero);
         isDrawing = true;
         drawingStartPos = worldPos;
         drawingStartExitDir = Vector3.zero;
+        drawingStartGroupHint = -1;
+        drawingEndGroupHint = -1;
 
         if (terrainGrader != null)
             terrainGrader.GradeAroundPoint(worldPos);
@@ -1250,6 +1316,8 @@ public class RailDrawingController : MonoBehaviour
         lastDirection = snap.exitDirection;
         drawingStartExitDir = snap.exitDirection;
         drawingEndExitDir = snap.exitDirection;
+        drawingStartGroupHint = snap.cardinalGroup;
+        drawingEndGroupHint = snap.cardinalGroup;
 
         GradeArcPoints(snap);
 
@@ -1306,6 +1374,8 @@ public class RailDrawingController : MonoBehaviour
         lastDirection = snap.exitDirection;
         drawingStartExitDir = snap.exitDirection;
         drawingEndExitDir = snap.exitDirection;
+        drawingStartGroupHint = snap.cardinalGroup;
+        drawingEndGroupHint = snap.cardinalGroup;
 
         GradeArcPoints(snap);
 
@@ -1336,10 +1406,55 @@ public class RailDrawingController : MonoBehaviour
         SnapResult snap = candidates[selectedCandidate];
         if (!snap.isValid) { knotCount--; return; }
 
+        // ── Multi-segment completion: auto-place all intermediate knots ──
+        if (snap.completionKnots != null && snap.completionKnots.Length > 0)
+        {
+            // Place first segment (current knot → first completion knot).
+            network.SetLastKnotTangentOut(snap.tangentOut);
+
+            for (int k = 0; k < snap.completionKnots.Length; k++)
+            {
+                var ck = snap.completionKnots[k];
+                network.AddKnotExplicit(ck.position, ck.tangentIn, ck.tangentOut);
+                knotCount++;
+
+                // Grade terrain along this segment's arc points.
+                if (terrainGrader != null && ck.gradePoints != null)
+                {
+                    for (int i = 0; i < ck.gradePoints.Length - 1; i++)
+                        terrainGrader.GradeAlongSegment(ck.gradePoints[i], ck.gradePoints[i + 1]);
+                    if (ck.gradePoints.Length > 0)
+                        terrainGrader.GradeAroundPoint(ck.gradePoints[^1]);
+                }
+            }
+
+            // Place the final endpoint.
+            network.AddKnotExplicit(snap.position, snap.tangentIn, Vector3.zero);
+            knotCount++;
+            lastDirection = snap.exitDirection;
+            drawingEndExitDir = snap.exitDirection;
+            drawingEndGroupHint = snap.cardinalGroup;
+
+            if (railLineRenderer != null)
+                railLineRenderer.RebuildFromSplines(network);
+
+            if (snap.isJoin)
+            {
+                if (snap.isMidSplineJoin && railGraph != null)
+                {
+                    pendingJoinNode = railGraph.SplitSegmentAtPosition(
+                        snap.joinSplineIndex, snap.position);
+                }
+                FinishSpline();
+            }
+            return;
+        }
+
         network.SetLastKnotTangentOut(snap.tangentOut);
         network.AddKnotExplicit(snap.position, snap.tangentIn, Vector3.zero);
         lastDirection = snap.exitDirection;
         drawingEndExitDir = snap.exitDirection;
+        drawingEndGroupHint = snap.cardinalGroup;
 
         GradeArcPoints(snap);
 
@@ -1398,10 +1513,9 @@ public class RailDrawingController : MonoBehaviour
             if (d > bestDot) { bestDot = d; bestCardinal = card; }
         }
 
-        float dist = Mathf.Clamp(
+        float dist = Mathf.Max(
             Mathf.Round(Vector3.Dot(offset, bestCardinal)),
-            RailConstants.MinSegmentLength,
-            RailConstants.MaxStraightLength);
+            RailConstants.MinSegmentLength);
 
         Vector3 snappedPos = firstKnot + bestCardinal * dist;
         snappedPos.y = firstKnot.y;
@@ -1548,7 +1662,7 @@ public class RailDrawingController : MonoBehaviour
     /// Builds candidates in all 4 cardinal directions (for the second knot,
     /// when no direction has been established yet).
     /// </summary>
-    private void BuildAllDirectionCandidates(Vector3 lastKnot)
+    private void BuildAllDirectionCandidates(Vector3 lastKnot, Vector3 cursorWorldPos)
     {
         candidates.Clear();
         GatherOccupiedPositions();
@@ -1556,21 +1670,21 @@ public class RailDrawingController : MonoBehaviour
         // Build straight + curve candidates for each cardinal direction.
         foreach (Vector3 cardinal in RailConstants.Cardinals)
         {
-            BuildCandidatesForDirection(lastKnot, cardinal, maxStraight: 20, skipFlip: true);
+            BuildCandidatesForDirection(lastKnot, cardinal, cursorWorldPos, skipFlip: true);
         }
     }
 
-    private void BuildCandidates(Vector3 lastKnot, Vector3 forward)
+    private void BuildCandidates(Vector3 lastKnot, Vector3 forward, Vector3 cursorWorldPos)
     {
         candidates.Clear();
 
         // Gather all occupied positions (existing knot world positions) for filtering.
         GatherOccupiedPositions();
 
-        BuildCandidatesForDirection(lastKnot, forward);
+        BuildCandidatesForDirection(lastKnot, forward, cursorWorldPos);
     }
 
-    private void BuildCandidatesForDirection(Vector3 lastKnot, Vector3 forward, int maxStraight = -1, bool skipFlip = false)
+    private void BuildCandidatesForDirection(Vector3 lastKnot, Vector3 forward, Vector3 cursorWorldPos, int maxStraight = -1, bool skipFlip = false)
     {
         // Check if the straight direction is completely blocked (first straight
         // candidate lands on an occupied position). If so, flip to opposite cardinal.
@@ -1582,12 +1696,28 @@ public class RailDrawingController : MonoBehaviour
                 forward = -forward;
         }
 
+        // Determine cardinal group from the (possibly flipped) forward direction.
+        int group = ComputeCardinalGroup(forward);
+
+        // Skip this direction entirely if the start node already has 3 exits in this group.
+        if (railGraph != null)
+        {
+            RailNode startNode = railGraph.FindNodeAtPosition(lastKnot, 0.6f);
+            if (startNode != null && startNode.GetGroupExitCount(group) >= 3)
+                return;
+        }
+
         Vector3 right = Vector3.Cross(Vector3.up, forward).normalized;
 
-        int straightLimit = maxStraight > 0 ? maxStraight : (int)RailConstants.MaxStraightLength;
+        int viewR = RailConstants.CandidateViewRadius;
 
-        // 1. Straight candidates.
-        for (int tileCount = 1; tileCount <= straightLimit; tileCount++)
+        // 1. Straight candidates — only generate near the cursor.
+        float cursorForwardProj = Vector3.Dot(cursorWorldPos - lastKnot, forward);
+        int sMin = Mathf.Max(1, Mathf.FloorToInt(cursorForwardProj) - viewR);
+        int sMax = maxStraight > 0
+            ? Mathf.Min(maxStraight, Mathf.CeilToInt(cursorForwardProj) + viewR)
+            : Mathf.CeilToInt(cursorForwardProj) + viewR;
+        for (int tileCount = sMin; tileCount <= sMax; tileCount++)
         {
             float dist = tileCount;
             Vector3 pos = lastKnot + forward * dist;
@@ -1618,76 +1748,117 @@ public class RailDrawingController : MonoBehaviour
                 tangentOut = tan,
                 tangentIn = -tan,
                 arcPoints = pts,
-                isValid = true
+                isValid = true,
+                cardinalGroup = group
             });
         }
 
-        // 2. Curve candidates: 3 radii × 4 angles × 2 sides.
-        for (int ri = 1; ri <= 3; ri++)
+        // 2. Curve candidates: for each reachable tile center, compute the unique
+        //    pure-arc radius R = (f² + l²) / (2|l|) that makes the turning circle
+        //    pass exactly through both S and T.  No straight tail needed.
+        float minR = RailConstants.MinTurnRadius;
+        float maxArcRad = RailConstants.MaxArcAngleDeg * Mathf.Deg2Rad;
+
+        // Iterate only tiles within CandidateViewRadius of the cursor.
+        Vector3 cursorOff = cursorWorldPos - lastKnot;
+        int cx = Mathf.RoundToInt(cursorOff.x);
+        int cz = Mathf.RoundToInt(cursorOff.z);
+        for (int dx = cx - viewR; dx <= cx + viewR; dx++)
+        for (int dz = cz - viewR; dz <= cz + viewR; dz++)
         {
-            float radius = RailConstants.TurnRadii[ri];
+            if (dx == 0 && dz == 0) continue;
 
-            for (int ai = 0; ai < RailConstants.CurveAnglesDeg.Length; ai++)
+            Vector3 tilePos = SnapPosToTileCenter(lastKnot + new Vector3(dx, 0, dz));
+            tilePos.y = lastKnot.y;
+
+            Vector3 toTile = tilePos - lastKnot;
+            toTile.y = 0f;
+            if (toTile.sqrMagnitude < RailConstants.MinSegmentLength * RailConstants.MinSegmentLength)
+                continue;
+
+            // Decompose offset into forward / lateral components.
+            float f = Vector3.Dot(toTile, forward);
+            float l = Vector3.Dot(toTile, right);
+
+            if (f < 0.1f) continue;            // behind us
+            float absL = Mathf.Abs(l);
+            if (absL < 0.5f) continue;          // near-straight — covered above
+
+            if (IsPositionOccupied(tilePos)) continue;
+
+            // Unique radius for a circle through S heading forward that also hits T.
+            float R = (f * f + l * l) / (2f * absL);
+            if (R < minR) continue;             // tighter than minimum turn
+
+            // Turn direction (+1 = right, –1 = left).
+            float sign = l > 0f ? 1f : -1f;
+
+            // Circle centre.
+            Vector3 center = lastKnot + right * sign * R;
+
+            // Vectors from centre to start / target.
+            Vector3 CS = lastKnot - center;  CS.y = 0f;
+            Vector3 CT = tilePos  - center;  CT.y = 0f;
+
+            // Arc sweep (signed).
+            float angleCS = Mathf.Atan2(CS.x, CS.z);
+            float angleCT = Mathf.Atan2(CT.x, CT.z);
+            float arcSweep = angleCT - angleCS;
+
+            if (sign > 0f)
             {
-                float angleDeg = RailConstants.CurveAnglesDeg[ai];
-                float theta = angleDeg * Mathf.Deg2Rad;
-
-                for (int side = 0; side < 2; side++)
-                {
-                    float sign = side == 0 ? 1f : -1f;
-
-                    Vector3 center = lastKnot + right * sign * radius;
-                    Vector3 radiusVec = lastKnot - center;
-                    Quaternion rotation = Quaternion.AngleAxis(sign * angleDeg, Vector3.up);
-
-                    Vector3 endpoint = center + rotation * radiusVec;
-                    endpoint.y = lastKnot.y;
-                    endpoint = SnapPosToTileCenter(endpoint);
-
-                    // Skip if endpoint is too close to start (degenerate).
-                    float epDist = Vector3.Distance(
-                        new Vector3(lastKnot.x, 0, lastKnot.z),
-                        new Vector3(endpoint.x, 0, endpoint.z));
-                    if (epDist < RailConstants.MinSegmentLength) continue;
-                    if (IsPositionOccupied(endpoint)) continue;
-
-                    // Skip duplicate positions (two combos snapped to same tile).
-                    bool duplicate = false;
-                    for (int ci = 0; ci < candidates.Count; ci++)
-                    {
-                        if (Vector3.Distance(candidates[ci].position, endpoint) < 0.1f)
-                        { duplicate = true; break; }
-                    }
-                    if (duplicate) continue;
-
-                    Vector3 exitForward = (rotation * forward).normalized;
-
-                    // Bezier tangent handle length for arc approximation.
-                    float d = (4f / 3f) * Mathf.Tan(theta / 4f) * radius;
-
-                    // Sample arc.
-                    int arcSamples = Mathf.Max(2, previewArcSamples);
-                    Vector3[] points = new Vector3[arcSamples];
-                    for (int i = 0; i < arcSamples; i++)
-                    {
-                        float t = (float)i / (arcSamples - 1);
-                        Quaternion rot = Quaternion.AngleAxis(sign * angleDeg * t, Vector3.up);
-                        points[i] = center + rot * radiusVec;
-                        points[i].y = lastKnot.y;
-                    }
-                    points[^1] = endpoint;
-
-                    candidates.Add(new SnapResult
-                    {
-                        position = endpoint,
-                        exitDirection = exitForward,
-                        tangentOut = forward * d,
-                        tangentIn = -exitForward * d,
-                        arcPoints = points,
-                        isValid = true
-                    });
-                }
+                while (arcSweep < 0f)            arcSweep += Mathf.PI * 2f;
+                while (arcSweep > Mathf.PI * 2f) arcSweep -= Mathf.PI * 2f;
             }
+            else
+            {
+                while (arcSweep > 0f)             arcSweep -= Mathf.PI * 2f;
+                while (arcSweep < -Mathf.PI * 2f) arcSweep += Mathf.PI * 2f;
+            }
+
+            float absArc = Mathf.Abs(arcSweep);
+            if (absArc < 0.03f || absArc > maxArcRad) continue;
+
+            // Duplicate check.
+            bool duplicate = false;
+            for (int ci = 0; ci < candidates.Count; ci++)
+            {
+                if (Vector3.Distance(candidates[ci].position, tilePos) < 0.1f)
+                { duplicate = true; break; }
+            }
+            if (duplicate) continue;
+
+            // Exit direction: forward rotated by the arc sweep.
+            float arcDeg = absArc * Mathf.Rad2Deg;
+            Quaternion exitRot = Quaternion.AngleAxis(sign * arcDeg, Vector3.up);
+            Vector3 exitDir = (exitRot * forward).normalized;
+
+            // Sample the arc for the preview line.
+            int arcSamples = Mathf.Max(4,
+                Mathf.CeilToInt(absArc / (Mathf.PI * 0.5f) * previewArcSamples));
+            var points = new Vector3[arcSamples];
+            for (int i = 0; i < arcSamples; i++)
+            {
+                float t = (float)i / Mathf.Max(1, arcSamples - 1);
+                float a = angleCS + arcSweep * t;
+                points[i] = center + new Vector3(Mathf.Sin(a), 0f, Mathf.Cos(a)) * R;
+                points[i].y = lastKnot.y;
+            }
+            points[arcSamples - 1] = tilePos; // exact endpoint
+
+            // Cubic-Bézier tangent handle length for a circular arc.
+            float bezierD = (4f / 3f) * Mathf.Tan(absArc / 4f) * R;
+
+            candidates.Add(new SnapResult
+            {
+                position      = tilePos,
+                exitDirection  = exitDir,
+                tangentOut     = forward * bezierD,
+                tangentIn      = -exitDir * bezierD,
+                arcPoints      = points,
+                isValid        = true,
+                cardinalGroup  = group
+            });
         }
     }
 
@@ -1698,8 +1869,10 @@ public class RailDrawingController : MonoBehaviour
     /// with an existing graph node or existing spline so we can visualise it
     /// as a join and auto-finish the spline when the player clicks it.
     /// </summary>
-    private void TagJoinCandidates()
+    private void TagJoinCandidates(Vector3 lastKnot = default, Vector3 forward = default)
     {
+        bool hasDirection = forward.sqrMagnitude > 0.5f;
+
         for (int i = 0; i < candidates.Count; i++)
         {
             SnapResult c = candidates[i];
@@ -1720,10 +1893,24 @@ public class RailDrawingController : MonoBehaviour
 
                 if (node != null && node.CanAddConnection)
                 {
+                    // Before tagging as a join, check the candidate's path doesn't
+                    // run on top of an existing spline (overlapping/collinear track).
+                    if (IsPathOverlappingExistingSpline(c))
+                    {
+                        c.isValid = false;
+                        candidates[i] = c;
+                        continue;
+                    }
+
                     c.isJoin    = true;
                     c.joinNode  = node;
                     c.position  = node.worldPosition; // snap to exact node position
                     candidates[i] = c;
+
+                    // Add ±8 parallel completion candidates along the existing rail direction.
+                    if (hasDirection)
+                        AddParallelCompletionCandidates(lastKnot, forward, node);
+
                     continue;
                 }
             }
@@ -1741,6 +1928,14 @@ public class RailDrawingController : MonoBehaviour
                     if (Vector3.Distance(c.position, drawingStartPos) < 1.1f && knotCount < 4)
                         break;
 
+                    // Reject if the candidate's path runs on top of the existing spline.
+                    if (IsPathOverlappingExistingSpline(c))
+                    {
+                        c.isValid = false;
+                        candidates[i] = c;
+                        break;
+                    }
+
                     c.isJoin = true;
                     c.isMidSplineJoin = true;
                     c.joinSplineIndex = splineSamples[j].splineIndex;
@@ -1749,6 +1944,290 @@ public class RailDrawingController : MonoBehaviour
                 }
             }
         }
+
+        // Remove invalidated candidates.
+        candidates.RemoveAll(c => !c.isValid);
+    }
+
+    /// <summary>
+    /// Returns true if the majority of the candidate's arc sample points lie on top
+    /// of an existing spline. This detects collinear/overlapping track proposals.
+    /// </summary>
+    private bool IsPathOverlappingExistingSpline(SnapResult c)
+    {
+        if (c.arcPoints == null || c.arcPoints.Length < 2) return false;
+
+        float tolSq = 0.9f * 0.9f;
+        // Sample a few interior points (skip first/last which are at node positions).
+        int overlapCount = 0;
+        int testCount = 0;
+        int step = Mathf.Max(1, c.arcPoints.Length / 5);
+        for (int p = 1; p < c.arcPoints.Length - 1; p += step)
+        {
+            testCount++;
+            for (int j = 0; j < splineSamples.Count; j++)
+            {
+                Vector3 diff = c.arcPoints[p] - splineSamples[j].worldPos;
+                diff.y = 0f;
+                if (diff.sqrMagnitude < tolSq)
+                {
+                    overlapCount++;
+                    break;
+                }
+            }
+        }
+
+        // If most interior samples overlap existing splines, it's collinear.
+        return testCount > 0 && overlapCount >= Mathf.CeilToInt(testCount * 0.5f);
+    }
+
+    // ─── Parallel Completion Suggestions ────────────────────────────────
+
+    private const float CompletionParallelOffset = 8f;
+
+    /// <summary>
+    /// Adds two completion candidates at ±8 tiles perpendicular to the approach
+    /// direction from a join node, enabling parallel track placement.
+    /// </summary>
+    private void AddParallelCompletionCandidates(Vector3 lastKnot, Vector3 forward, RailNode joinNode)
+    {
+        Vector3 right = Vector3.Cross(Vector3.up, forward).normalized;
+        float radius = PickCompletionRadius(joinNode, lastKnot, forward);
+
+        Vector3 target1 = joinNode.worldPosition + right * CompletionParallelOffset;
+        Vector3 target2 = joinNode.worldPosition - right * CompletionParallelOffset;
+
+        TryBuildCompletionPath(lastKnot, forward, right, target1, radius, null);
+        TryBuildCompletionPath(lastKnot, forward, right, target2, radius, null);
+    }
+
+    /// <summary>
+    /// Determines the best turn radius for a completion path by checking what radii
+    /// are used in the segments connected to the target node and the current drawing.
+    /// Falls back to smaller radii if the most-used one doesn't fit.
+    /// </summary>
+    private float PickCompletionRadius(RailNode targetNode, Vector3 startPos, Vector3 forward)
+    {
+        Vector3 toTarget = targetNode.worldPosition - startPos;
+        toTarget.y = 0f;
+        float lateralDist = Mathf.Abs(Vector3.Dot(toTarget, Vector3.Cross(Vector3.up, forward).normalized));
+
+        // Use MinTurnRadius if it fits; otherwise clamp to lateral distance.
+        return Mathf.Max(RailConstants.MinTurnRadius, lateralDist * 0.5f);
+    }
+
+    /// <summary>
+    /// Attempts to build a straight → 90° curve → straight completion path from
+    /// startPos/forward to target. Adds to candidates list if geometry works out.
+    /// </summary>
+    private void TryBuildCompletionPath(Vector3 startPos, Vector3 forward, Vector3 right,
+        Vector3 target, float radius, RailNode joinNode)
+    {
+        Vector3 toTarget = target - startPos;
+        toTarget.y = 0f;
+
+        // Determine which side the target is on.
+        float lateralOffset = Vector3.Dot(toTarget, right);
+        float forwardOffset = Vector3.Dot(toTarget, forward);
+        if (forwardOffset < 1f) return; // target is behind us
+
+        float sign = lateralOffset >= 0f ? 1f : -1f;
+        float absLateral = Mathf.Abs(lateralOffset);
+
+        // For a 90° turn: we need 'radius' of lateral space for the curve.
+        if (absLateral < radius * 0.5f) return; // too close laterally
+
+        // Path layout:
+        //   straightLen forward → 90° curve (radius) → remainingLen perpendicular
+        // The curve center is at startPos + forward*straightLen + right*sign*radius.
+        // After 90° turn, we exit going in the 'right*sign' direction.
+        // The curve endpoint is center + forward*(-1)*radius... let me compute properly.
+        //
+        // Curve center = turnStart + right*sign*radius
+        // turnStart = startPos + forward * straightLen
+        // Curve endpoint = center + forward * 0 * ... 
+        // After 90° turn from forward around Y by sign*90°:
+        //   exit direction = right * sign (perpendicular)
+        //   exit position = center + (-right*sign)*radius rotated by sign*90° around Y
+        //     = center - forward * radius (no, let me think again)
+        //
+        // Center of the arc: turnStart + right*sign*radius
+        // Start of arc: turnStart (= center - right*sign*radius)
+        // After 90° rotation:
+        //   endpoint = center + Quaternion.AngleAxis(sign*90, up) * (turnStart - center)
+        //            = center + Quaternion.AngleAxis(sign*90, up) * (-right*sign*radius)
+        // Quaternion.AngleAxis(90, up) * (-right) = forward (since right = cross(up, forward))
+        // Quaternion.AngleAxis(-90, up) * (right) = forward
+        // So: sign=+1: rot(90, up) * (-right * radius) = forward * radius → endpoint = center + forward*radius
+        //     sign=-1: rot(-90, up) * (right * radius) = forward * radius → endpoint = center + forward*radius
+        // Wait that doesn't seem right. Let me use explicit computation.
+
+        // The turn starts at some point along 'forward' from startPos.
+        // After the turn, we continue perpendicular. The geometry:
+        //   lateral distance consumed by curve = radius  
+        //   forward distance consumed by curve = radius
+        //   remaining lateral = absLateral - radius (covered by straight after curve)
+        //   forward straight before curve = forwardOffset - radius
+
+        float straightBefore = forwardOffset - radius;
+        float straightAfter  = absLateral - radius;
+        if (straightBefore < 0f || straightAfter < -0.5f) return;
+        straightAfter = Mathf.Max(0f, straightAfter);
+
+        Vector3 turnStart = startPos + forward * straightBefore;
+        turnStart.y = startPos.y;
+
+        Vector3 curveCenter = turnStart + right * sign * radius;
+        Vector3 radiusVec = turnStart - curveCenter;
+        float angleDeg = 90f;
+        float theta = angleDeg * Mathf.Deg2Rad;
+        Quaternion rotation = Quaternion.AngleAxis(sign * angleDeg, Vector3.up);
+        Vector3 curveEnd = curveCenter + rotation * radiusVec;
+        curveEnd.y = startPos.y;
+
+        Vector3 exitDir = (rotation * forward).normalized;
+
+        // Final endpoint after the straight section.
+        Vector3 finalPos = curveEnd + exitDir * straightAfter;
+        finalPos.y = startPos.y;
+        finalPos = SnapPosToTileCenter(finalPos);
+
+        // Check that the final position is close enough to the intended target.
+        float finalError = Vector3.Distance(
+            new Vector3(finalPos.x, 0, finalPos.z),
+            new Vector3(target.x, 0, target.z));
+        if (finalError > 2f) return; // geometry doesn't line up
+
+        // Check for overlaps.
+        if (IsPathOverlappingExistingSpline(new SnapResult { arcPoints = SampleCompletionPath(
+            startPos, turnStart, curveCenter, radiusVec, sign, angleDeg, curveEnd, finalPos, startPos.y) }))
+            return;
+
+        // Snap final position to target for join candidates.
+        if (joinNode != null)
+            finalPos = joinNode.worldPosition;
+
+        // Build arc points for preview line.
+        Vector3[] previewPoints = SampleCompletionPath(
+            startPos, turnStart, curveCenter, radiusVec, sign, angleDeg, curveEnd, finalPos, startPos.y);
+
+        // Build Bezier tangent handles.
+        float straightBeforeLen = Mathf.Max(straightBefore, 0.1f);
+        float curveD = (4f / 3f) * Mathf.Tan(theta / 4f) * radius;
+        float straightAfterLen = Mathf.Max(straightAfter, 0.1f);
+
+        // Completion knots: turnStart (end of first straight / start of curve),
+        //                   curveEnd (end of curve / start of second straight).
+        var knots = new CompletionKnot[2];
+
+        // Knot 0: turnStart — end of straight, start of curve
+        knots[0] = new CompletionKnot
+        {
+            position = turnStart,
+            tangentIn = -forward * (straightBeforeLen / 3f),
+            tangentOut = forward * curveD,
+            gradePoints = SampleStraight(startPos, turnStart, startPos.y)
+        };
+
+        // Knot 1: curveEnd — end of curve, start of final straight
+        knots[1] = new CompletionKnot
+        {
+            position = curveEnd,
+            tangentIn = -exitDir * curveD,
+            tangentOut = exitDir * (straightAfterLen / 3f),
+            gradePoints = SampleArc(curveCenter, radiusVec, sign, angleDeg, startPos.y)
+        };
+
+        // The SnapResult tangentOut is for the FIRST segment (start → turnStart).
+        // tangentIn is for the LAST segment (curveEnd → finalPos).
+        candidates.Add(new SnapResult
+        {
+            position = finalPos,
+            exitDirection = exitDir,
+            tangentOut = forward * (straightBeforeLen / 3f), // start knot tangent-out
+            tangentIn = -exitDir * (straightAfterLen / 3f),  // final knot tangent-in
+            arcPoints = previewPoints,
+            isValid = true,
+            isJoin = joinNode != null,
+            joinNode = joinNode,
+            cardinalGroup = ComputeCardinalGroup(forward),
+            completionKnots = knots
+        });
+    }
+
+    private Vector3[] SampleCompletionPath(Vector3 start, Vector3 turnStart,
+        Vector3 curveCenter, Vector3 radiusVec, float sign, float angleDeg,
+        Vector3 curveEnd, Vector3 finalPos, float y)
+    {
+        var points = new List<Vector3>();
+
+        // Straight before curve.
+        float straightDist = Vector3.Distance(
+            new Vector3(start.x, 0, start.z),
+            new Vector3(turnStart.x, 0, turnStart.z));
+        int straightSamples = Mathf.Max(2, Mathf.CeilToInt(straightDist));
+        for (int i = 0; i < straightSamples; i++)
+        {
+            float t = (float)i / Mathf.Max(1, straightSamples - 1);
+            Vector3 p = Vector3.Lerp(start, turnStart, t);
+            p.y = y;
+            points.Add(p);
+        }
+
+        // Arc.
+        int arcSamples = Mathf.Max(8, previewArcSamples);
+        for (int i = 1; i <= arcSamples; i++)
+        {
+            float t = (float)i / arcSamples;
+            Quaternion rot = Quaternion.AngleAxis(sign * angleDeg * t, Vector3.up);
+            Vector3 p = curveCenter + rot * radiusVec;
+            p.y = y;
+            points.Add(p);
+        }
+
+        // Straight after curve.
+        float afterDist = Vector3.Distance(
+            new Vector3(curveEnd.x, 0, curveEnd.z),
+            new Vector3(finalPos.x, 0, finalPos.z));
+        int afterSamples = Mathf.Max(2, Mathf.CeilToInt(afterDist));
+        for (int i = 1; i <= afterSamples; i++)
+        {
+            float t = (float)i / afterSamples;
+            Vector3 p = Vector3.Lerp(curveEnd, finalPos, t);
+            p.y = y;
+            points.Add(p);
+        }
+
+        return points.ToArray();
+    }
+
+    private Vector3[] SampleStraight(Vector3 a, Vector3 b, float y)
+    {
+        float dist = Vector3.Distance(new Vector3(a.x, 0, a.z), new Vector3(b.x, 0, b.z));
+        int count = Mathf.Max(2, Mathf.CeilToInt(dist) + 1);
+        var pts = new Vector3[count];
+        for (int i = 0; i < count; i++)
+        {
+            float t = (float)i / (count - 1);
+            pts[i] = Vector3.Lerp(a, b, t);
+            pts[i].y = y;
+        }
+        return pts;
+    }
+
+    private Vector3[] SampleArc(Vector3 center, Vector3 radiusVec, float sign,
+        float angleDeg, float y)
+    {
+        int count = Mathf.Max(4, previewArcSamples);
+        var pts = new Vector3[count + 1];
+        for (int i = 0; i <= count; i++)
+        {
+            float t = (float)i / count;
+            Quaternion rot = Quaternion.AngleAxis(sign * angleDeg * t, Vector3.up);
+            pts[i] = center + rot * radiusVec;
+            pts[i].y = y;
+        }
+        return pts;
     }
 
     // ─── Preview ─────────────────────────────────────────────────────────
@@ -1806,14 +2285,14 @@ public class RailDrawingController : MonoBehaviour
         if (knotCount == 1)
         {
             // Show candidates in all 4 cardinal directions.
-            BuildAllDirectionCandidates(lastKnotOpt.Value);
+            BuildAllDirectionCandidates(lastKnotOpt.Value, cursorWorldPos);
         }
         else
         {
-            BuildCandidates(lastKnotOpt.Value, lastDirection);
+            BuildCandidates(lastKnotOpt.Value, lastDirection, cursorWorldPos);
         }
         BuildSplineSamples();
-        TagJoinCandidates();
+        TagJoinCandidates(lastKnotOpt.Value, lastDirection);
 
         // Find closest candidate to cursor (XZ distance).
         float bestDistSq = float.MaxValue;
@@ -1843,8 +2322,17 @@ public class RailDrawingController : MonoBehaviour
 
                 bool isSel  = (i == selectedCandidate);
                 bool isJoin = candidates[i].isJoin;
-                markerPool[i].GetComponent<Renderer>().sharedMaterial =
-                    isJoin ? joinMat : (isSel ? selectedMat : candidateMat);
+
+                // Colour by cardinal direction group (N=Yellow, E=Green, S=Blue, W=Orange).
+                Material mat;
+                if (isSel)
+                    mat = selectedMat;
+                else if (isJoin)
+                    mat = joinMat;
+                else
+                    mat = GetCardinalGroupMaterial(candidates[i].cardinalGroup);
+
+                markerPool[i].GetComponent<Renderer>().sharedMaterial = mat;
                 markerPool[i].transform.localScale = isSel
                     ? new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f)
                     : new Vector3(markerRadius, 0.15f, markerRadius);
@@ -1997,7 +2485,8 @@ public class RailDrawingController : MonoBehaviour
             // Exit direction at end node points backward (away from the node along the track).
             Vector3 endExit = -drawingEndExitDir;
 
-            railGraph.RegisterSegment(startNode, endNode, splineIdx, startExit, endExit);
+            railGraph.RegisterSegment(startNode, endNode, splineIdx, startExit, endExit,
+                                       drawingStartGroupHint, drawingEndGroupHint);
         }
         else
         {
