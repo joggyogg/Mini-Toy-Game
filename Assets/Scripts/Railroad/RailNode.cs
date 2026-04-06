@@ -19,27 +19,14 @@ public class RailNode
     public const int MaxConnections = 12;
     public const int NumDirectionGroups = 4;
 
-    private static int _nextJunctionId = 1;
-
     public Vector3 worldPosition;
     public Vector2Int tileCoord;
-    public int junctionId = -1; // assigned when node first becomes a junction
 
     [NonSerialized] public readonly List<RailSegment> connections = new();
     [NonSerialized] public readonly List<Vector3> exitDirections = new();
 
     /// <summary>Which direction group (0-3) each connection belongs to. Parallel to connections.</summary>
     [NonSerialized] public readonly List<int> connectionGroupMap = new();
-
-    /// <summary>Explicit group hint per connection (-1 = auto-classify from exitDirection).</summary>
-    [NonSerialized] public readonly List<int> connectionGroupHints = new();
-
-    /// <summary>
-    /// World-space position sampled a fixed distance along each exit's spline.
-    /// Used to sort exits left-to-right within a direction group.
-    /// Parallel to connections.
-    /// </summary>
-    [NonSerialized] public readonly List<Vector3> connectionSortPoints = new();
 
     /// <summary>
     /// Angle in degrees of the junction's principal axis (group 0 center).
@@ -75,11 +62,10 @@ public class RailNode
 
     /// <summary>
     /// Returns the center angle (degrees, XZ plane, 0 = +Z) of direction group g.
-    /// Groups use absolute world cardinals: 0=North(0°), 1=East(90°), 2=South(180°), 3=West(270°).
     /// </summary>
     public float GroupCenterAngle(int g)
     {
-        return NormalizeAngle(g * 90f);
+        return NormalizeAngle(junctionOrientation + g * 90f);
     }
 
     /// <summary>
@@ -104,9 +90,8 @@ public class RailNode
     }
 
     /// <summary>
-    /// Returns all connections in the given direction group, ordered spatially
-    /// left-to-right by the lateral position of the segment's far endpoint
-    /// relative to this node and the group's forward axis.
+    /// Returns all connections in the given direction group, ordered by clockwise
+    /// angle from the group's center.
     /// </summary>
     public List<RailSegment> GetGroupExits(int groupIndex)
     {
@@ -116,21 +101,14 @@ public class RailNode
             if (connectionGroupMap[i] == groupIndex)
                 result.Add(connections[i]);
         }
-        // "Right" vector perpendicular to the group's forward in XZ.
-        float centerRad = GroupCenterAngle(groupIndex) * Mathf.Deg2Rad;
-        Vector3 groupRight = new Vector3(Mathf.Cos(centerRad), 0f, -Mathf.Sin(centerRad));
-
+        // Sort by signed angle from group center: most counter-clockwise (negative) first,
+        // most clockwise (positive) last. This matches the left-to-right pip layout in the UI.
+        float center = GroupCenterAngle(groupIndex);
         result.Sort((a, b) =>
         {
-            int idxA = connections.IndexOf(a);
-            int idxB = connections.IndexOf(b);
-            Vector3 ptA = (idxA >= 0 && idxA < connectionSortPoints.Count)
-                ? connectionSortPoints[idxA] : worldPosition;
-            Vector3 ptB = (idxB >= 0 && idxB < connectionSortPoints.Count)
-                ? connectionSortPoints[idxB] : worldPosition;
-            float latA = Vector3.Dot(ptA - worldPosition, groupRight);
-            float latB = Vector3.Dot(ptB - worldPosition, groupRight);
-            return latA.CompareTo(latB);
+            float dA = AngleDelta(center, ExitAngle(a)); // signed -180..180
+            float dB = AngleDelta(center, ExitAngle(b));
+            return dA.CompareTo(dB);
         });
         return result;
     }
@@ -223,16 +201,13 @@ public class RailNode
 
     // ─── Connection Management ──────────────────────────────────────────
 
-    public void AddConnection(RailSegment segment, Vector3 exitDir, int groupHint = -1, Vector3 sortPoint = default)
+    public void AddConnection(RailSegment segment, Vector3 exitDir)
     {
         if (connections.Count >= MaxConnections)
             throw new InvalidOperationException($"RailNode at {worldPosition} already has {MaxConnections} connections.");
         connections.Add(segment);
         exitDirections.Add(exitDir.normalized);
         connectionGroupMap.Add(0); // temporary; reclassified below
-        connectionGroupHints.Add(groupHint);
-        // If no sort point provided, fall back to a point 3 units along exitDir.
-        connectionSortPoints.Add(sortPoint == default ? worldPosition + exitDir.normalized * 3f : sortPoint);
         ReclassifyGroups();
     }
 
@@ -243,8 +218,6 @@ public class RailNode
         connections.RemoveAt(idx);
         exitDirections.RemoveAt(idx);
         connectionGroupMap.RemoveAt(idx);
-        connectionGroupHints.RemoveAt(idx);
-        connectionSortPoints.RemoveAt(idx);
         ReclassifyGroups();
     }
 
@@ -261,14 +234,11 @@ public class RailNode
     // ─── Orientation & Classification ───────────────────────────────────
 
     /// <summary>
-    /// Reclassifies all connections into direction groups using absolute world cardinals.
-    /// junctionOrientation is always 0 (North) — groups are fixed N/E/S/W.
+    /// Recomputes junctionOrientation from the connections and reclassifies
+    /// all connections into direction groups.
     /// </summary>
     public void ReclassifyGroups()
     {
-        // Orientation is always 0 — absolute world cardinals.
-        junctionOrientation = 0f;
-
         if (connections.Count < 3)
         {
             // Not a junction — reset group map silently.
@@ -277,81 +247,64 @@ public class RailNode
             return;
         }
 
-        // Save the currently-active segment for each group so we can
-        // restore gate indices after the sort order may have changed.
-        RailSegment[] prevActive = new RailSegment[NumDirectionGroups];
-        bool hadJunction = connections.Count > 3; // junction existed before this add
-        if (hadJunction)
-        {
-            for (int g = 0; g < NumDirectionGroups; g++)
-            {
-                var exits = GetGroupExits(g);
-                if (exits.Count > 0)
-                    prevActive[g] = exits[gateIndices[g] % exits.Count];
-            }
-        }
+        // Only compute orientation the first time the junction forms (3 connections).
+        // For 4+ connections we keep the existing orientation so adding tracks
+        // never scrambles the already-established group layout.
+        if (connections.Count == 3)
+            ComputeOrientation();
 
-        // Classify each connection into the nearest direction group,
-        // honouring explicit group hints when provided.
-        // Hints from the drawing system reflect which cardinal arm an exit
-        // was built from, which is more accurate than raw exit angles for
-        // curved exits near group boundaries. Join hints are reclassified
-        // from the junction's perspective in FinishSpline before arriving here.
-        bool freshJunction = connections.Count == 3 && !hadJunction;
+        // Classify each connection into the nearest direction group.
         for (int i = 0; i < connections.Count; i++)
         {
-            int hint = i < connectionGroupHints.Count ? connectionGroupHints[i] : -1;
-            connectionGroupMap[i] = (hint >= 0 && hint < NumDirectionGroups)
-                ? hint
-                : ClassifyToGroup(exitDirections[i]);
+            connectionGroupMap[i] = ClassifyToGroup(exitDirections[i]);
         }
 
-        // Restore gate indices: find the previously-active segment's new
-        // position in its (possibly reordered) group.
+        // Clamp gate indices to valid range.
         for (int g = 0; g < NumDirectionGroups; g++)
         {
             int count = GetGroupExitCount(g);
             if (count == 0)
-            {
                 gateIndices[g] = 0;
-            }
-            else if (hadJunction && prevActive[g] != null)
-            {
-                var exits = GetGroupExits(g);
-                int idx = exits.IndexOf(prevActive[g]);
-                gateIndices[g] = idx >= 0 ? idx : 0;
-            }
             else
-            {
                 gateIndices[g] = gateIndices[g] % count;
-            }
-        }
-
-        // Assign junction ID and log details when a node first becomes a junction.
-        if (freshJunction && junctionId < 0)
-        {
-            junctionId = _nextJunctionId++;
-        }
-        if (IsJunction)
-        {
-            LogJunctionState();
         }
     }
 
-    private static readonly string[] GroupColorNames = { "Yellow(N)", "Green(E)", "Blue(S)", "Red(W)" };
-
-    private void LogJunctionState()
+    /// <summary>
+    /// Auto-detects the junction orientation from the most-opposite pair of exits.
+    /// </summary>
+    private void ComputeOrientation()
     {
-        var sb = new System.Text.StringBuilder();
-        sb.Append($"[Junction #{junctionId}] pos={worldPosition} | {connections.Count} exits:");
-        for (int i = 0; i < connections.Count; i++)
+        if (exitDirections.Count < 2) return;
+
+        float bestOpposite = -1f;
+        int bestA = 0, bestB = 1;
+
+        for (int a = 0; a < exitDirections.Count; a++)
         {
-            int g = connectionGroupMap[i];
-            string colorName = (g >= 0 && g < GroupColorNames.Length) ? GroupColorNames[g] : $"Group{g}";
-            Vector3 dir = exitDirections[i];
-            sb.Append($"\n  exit[{i}] → {colorName} dir=({dir.x:F2}, {dir.z:F2}) spline={connections[i].splineIndex}");
+            for (int b = a + 1; b < exitDirections.Count; b++)
+            {
+                // Dot product: perfectly opposite = -1, so we look for the most negative.
+                float dot = Vector3.Dot(exitDirections[a], exitDirections[b]);
+                float opposition = -dot; // higher = more opposite
+                if (opposition > bestOpposite)
+                {
+                    bestOpposite = opposition;
+                    bestA = a;
+                    bestB = b;
+                }
+            }
         }
-        Debug.Log(sb.ToString());
+
+        // Bisector angle: average the two directions (flip one to same hemisphere first).
+        Vector3 dirA = exitDirections[bestA];
+        Vector3 dirB = -exitDirections[bestB]; // flip so both point "same way"
+        Vector3 bisector = (dirA + dirB).normalized;
+
+        if (bisector.sqrMagnitude < 0.001f)
+            bisector = exitDirections[bestA]; // fallback
+
+        junctionOrientation = Mathf.Atan2(bisector.x, bisector.z) * Mathf.Rad2Deg;
     }
 
     // ─── Angle Utilities ────────────────────────────────────────────────

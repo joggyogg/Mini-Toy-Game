@@ -87,30 +87,12 @@ public class RailGraph : MonoBehaviour
     /// Wires up node connections with exit directions.
     /// </summary>
     public RailSegment RegisterSegment(RailNode from, RailNode to, int splineIndex,
-                                        Vector3 fromExitDir, Vector3 toExitDir,
-                                        int fromGroupHint = -1, int toGroupHint = -1)
+                                        Vector3 fromExitDir, Vector3 toExitDir)
     {
         var seg = new RailSegment(from, to, splineIndex);
         segments.Add(seg);
-
-        // Sample the spline 3 world-units from each end for stable pip sorting.
-        const float sortDist = 3f;
-        Vector3 fromSortPt = from.worldPosition + fromExitDir.normalized * sortDist;
-        Vector3 toSortPt   = to.worldPosition   + toExitDir.normalized   * sortDist;
-        if (network != null && splineIndex >= 0 && splineIndex < network.SplineCount)
-        {
-            float len = network.Container.Splines[splineIndex].GetLength();
-            if (len > 0.01f)
-            {
-                float tFrom = Mathf.Clamp01(sortDist / len);
-                float tTo   = Mathf.Clamp01(1f - sortDist / len);
-                fromSortPt = network.EvaluatePositionWorld(splineIndex, tFrom);
-                toSortPt   = network.EvaluatePositionWorld(splineIndex, tTo);
-            }
-        }
-
-        from.AddConnection(seg, fromExitDir, fromGroupHint, fromSortPt);
-        to.AddConnection(seg, toExitDir, toGroupHint, toSortPt);
+        from.AddConnection(seg, fromExitDir);
+        to.AddConnection(seg, toExitDir);
 
         Debug.Log($"[RailGraph] Segment registered: spline {splineIndex} | " +
                   $"Nodes: {nodes.Count}, Segments: {segments.Count} | " +
@@ -120,10 +102,6 @@ public class RailGraph : MonoBehaviour
         // Manage switch boxes for nodes that became/updated junctions.
         UpdateSwitchBox(from);
         UpdateSwitchBox(to);
-
-        // Smooth spline approaches at any node with multiple connections.
-        if (from.ConnectionCount >= 2) SmoothJunction(from);
-        if (to.ConnectionCount >= 2)   SmoothJunction(to);
 
         return seg;
     }
@@ -392,8 +370,9 @@ public class RailGraph : MonoBehaviour
         // ── Remove old segment (removes spline, reindexes) ────────────
         RemoveSegment(seg);
 
-        // ── Create or reuse split node ─────────────────────────────────
-        RailNode splitNode = GetOrCreateNode(splitWorldPos, 1.0f);
+        // ── Create split node ──────────────────────────────────────────
+        RailNode splitNode = new RailNode(splitWorldPos, WorldToTile(splitWorldPos));
+        nodes.Add(splitNode);
 
         // ── Add two new splines ────────────────────────────────────────
         int firstIdx = network.AddSplineFromKnots(firstKnots);
@@ -491,70 +470,5 @@ public class RailGraph : MonoBehaviour
         return new Vector2Int(
             Mathf.FloorToInt(worldPos.x + 0.5f),
             Mathf.FloorToInt(worldPos.z + 0.5f));
-    }
-
-    // ─── Junction Smoothing ─────────────────────────────────────────────
-
-    /// <summary>
-    /// Smooths spline endpoints at <paramref name="node"/> that have near-zero
-    /// tangent handles (e.g. the first knot of a track started from a junction).
-    /// If the drawing system already set a handle with significant magnitude, it
-    /// is left untouched — overwriting it would break the curve shape.
-    /// </summary>
-    public void SmoothJunction(RailNode node)
-    {
-        if (network == null) return;
-        var container = network.Container;
-        var xform     = network.transform;
-
-        for (int ci = 0; ci < node.connections.Count; ci++)
-        {
-            RailSegment seg = node.connections[ci];
-            int sIdx = seg.splineIndex;
-            if (sIdx < 0 || sIdx >= container.Splines.Count) continue;
-            var spline = container.Splines[sIdx];
-            if (spline.Count < 2) continue;
-
-            // Is the node at the start (knot 0) or end (last knot) of this spline?
-            Vector3 firstWorld = xform.TransformPoint((Vector3)spline[0].Position);
-            Vector3 lastWorld  = xform.TransformPoint((Vector3)spline[spline.Count - 1].Position);
-            bool atStart = (firstWorld - node.worldPosition).sqrMagnitude
-                         < (lastWorld  - node.worldPosition).sqrMagnitude;
-
-            Vector3 exitDir = node.GetExitDirection(seg);
-            if (exitDir.sqrMagnitude < 0.01f) continue;
-            exitDir = exitDir.normalized;
-
-            if (atStart)
-            {
-                var knot = spline[0];
-                // Only fix handles that the drawing system left at zero.
-                if (math.length(knot.TangentOut) > 0.5f) continue;
-
-                // Use chord/3 as the handle length (standard cubic Bézier rule).
-                Vector3 adjWorld = xform.TransformPoint((Vector3)spline[1].Position);
-                float chord = Vector3.Distance(firstWorld, adjWorld);
-                float handleLen = Mathf.Max(chord / 3f, 1f);
-
-                knot.TangentOut = (float3)xform.InverseTransformVector(exitDir * handleLen);
-                spline[0] = knot;
-                spline.SetTangentMode(0, TangentMode.Broken);
-            }
-            else
-            {
-                int lastIdx = spline.Count - 1;
-                var knot = spline[lastIdx];
-                // Only fix handles that the drawing system left at zero.
-                if (math.length(knot.TangentIn) > 0.5f) continue;
-
-                Vector3 adjWorld = xform.TransformPoint((Vector3)spline[lastIdx - 1].Position);
-                float chord = Vector3.Distance(lastWorld, adjWorld);
-                float handleLen = Mathf.Max(chord / 3f, 1f);
-
-                knot.TangentIn = (float3)xform.InverseTransformVector(-exitDir * handleLen);
-                spline[lastIdx] = knot;
-                spline.SetTangentMode(lastIdx, TangentMode.Broken);
-            }
-        }
     }
 }
