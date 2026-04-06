@@ -19,8 +19,11 @@ public class RailNode
     public const int MaxConnections = 12;
     public const int NumDirectionGroups = 4;
 
+    private static int _nextJunctionId = 1;
+
     public Vector3 worldPosition;
     public Vector2Int tileCoord;
+    public int junctionId = -1; // assigned when node first becomes a junction
 
     [NonSerialized] public readonly List<RailSegment> connections = new();
     [NonSerialized] public readonly List<Vector3> exitDirections = new();
@@ -290,6 +293,11 @@ public class RailNode
 
         // Classify each connection into the nearest direction group,
         // honouring explicit group hints when provided.
+        // Hints from the drawing system reflect which cardinal arm an exit
+        // was built from, which is more accurate than raw exit angles for
+        // curved exits near group boundaries. Join hints are reclassified
+        // from the junction's perspective in FinishSpline before arriving here.
+        bool freshJunction = connections.Count == 3 && !hadJunction;
         for (int i = 0; i < connections.Count; i++)
         {
             int hint = i < connectionGroupHints.Count ? connectionGroupHints[i] : -1;
@@ -318,6 +326,32 @@ public class RailNode
                 gateIndices[g] = gateIndices[g] % count;
             }
         }
+
+        // Assign junction ID and log details when a node first becomes a junction.
+        if (freshJunction && junctionId < 0)
+        {
+            junctionId = _nextJunctionId++;
+        }
+        if (IsJunction)
+        {
+            LogJunctionState();
+        }
+    }
+
+    private static readonly string[] GroupColorNames = { "Yellow(N)", "Green(E)", "Blue(S)", "Red(W)" };
+
+    private void LogJunctionState()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"[Junction #{junctionId}] pos={worldPosition} | {connections.Count} exits:");
+        for (int i = 0; i < connections.Count; i++)
+        {
+            int g = connectionGroupMap[i];
+            string colorName = (g >= 0 && g < GroupColorNames.Length) ? GroupColorNames[g] : $"Group{g}";
+            Vector3 dir = exitDirections[i];
+            sb.Append($"\n  exit[{i}] → {colorName} dir=({dir.x:F2}, {dir.z:F2}) spline={connections[i].splineIndex}");
+        }
+        Debug.Log(sb.ToString());
     }
 
     // ─── Angle Utilities ────────────────────────────────────────────────

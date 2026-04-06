@@ -30,6 +30,9 @@ public struct SnapResult
     public int joinSplineIndex;    // spline index for mid-spline join (-1 = N/A)
     public bool isMidSplineJoin;   // true = need to split existing segment to create junction
     public int cardinalGroup;      // 0=N, 1=E, 2=S, 3=W — which cardinal arm built this candidate
+    public bool isParallelReturn;  // true if this curve continues the arc at the same radius
+    public bool isStraightenReturn; // true if this candidate reverts the curve back to straight
+    public bool isJunctionMirror;   // true if this candidate mirrors an existing junction exit
     public CompletionKnot[] completionKnots; // non-null = multi-segment auto-completion
 }
 
@@ -85,6 +88,10 @@ public class RailDrawingController : MonoBehaviour
     [SerializeField] private RailLineRenderer railLineRenderer;
     [SerializeField] private RailTerrainGrader terrainGrader;
 
+    [Header("Curve Constraints")]
+    [SerializeField, Tooltip("Minimum turning radius in tiles. Curves tighter than this are rejected.")]
+    private float minTurnRadius = 20f;
+
     [Header("Preview")]
     [SerializeField] private float previewLineWidth = 0.08f;
     [SerializeField] private Color previewColor = Color.green;
@@ -100,6 +107,7 @@ public class RailDrawingController : MonoBehaviour
     private bool isDrawing;
     private int knotCount;
     private Vector3 lastDirection;
+    private Vector3 previousKnotPos; // position of the knot before the current last knot
 
     // Track start/end positions and directions for graph registration.
     private Vector3 drawingStartPos;
@@ -107,6 +115,10 @@ public class RailDrawingController : MonoBehaviour
     private Vector3 drawingEndExitDir;
     private int drawingStartGroupHint = -1;
     private int drawingEndGroupHint = -1;
+
+    // When branching from a mid-curve knot, this holds the second tangent
+    // continuation direction so candidates are generated for both sides.
+    private Vector3 midKnotAltDirection;
 
     // ─── Candidate System ────────────────────────────────────────────────
 
@@ -117,6 +129,10 @@ public class RailDrawingController : MonoBehaviour
     private Material candidateMat;
     private Material selectedMat;
     private Material joinMat;
+    private Material parallelReturnMat;
+    private Mesh starMesh;
+    private Mesh sphereMesh;
+    private Mesh cylinderMesh;
     private Material deleteMat;
     private Material deleteSelectedMat;
     private Material selectMat;
@@ -150,6 +166,8 @@ public class RailDrawingController : MonoBehaviour
         public int knotCount;       // total knots in the spline
         public Vector3 worldPos;
         public Vector3 exitDir;     // direction the track heads away from this knot
+        public Vector3 exitDir2;    // second tangent direction (mid-knot only; zero otherwise)
+        public bool isMidKnot;      // true when knot has two valid exit directions
     }
     private readonly List<SelectEndpointRef> selectRefs = new();
     private int selectedSelectEndpoint = -1;
@@ -235,6 +253,12 @@ public class RailDrawingController : MonoBehaviour
         selectedMat.color = selectedColor;
         joinMat = new Material(markerShader);
         joinMat.color = joinColor;
+        parallelReturnMat = new Material(markerShader);
+        parallelReturnMat.color = new Color(1f, 0.95f, 0.4f, 0.95f); // bright gold
+        starMesh = BuildStarMesh(5, 0.5f, 0.22f, 0.15f);
+        var tempSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        sphereMesh = tempSphere.GetComponent<MeshFilter>().sharedMesh;
+        DestroyImmediate(tempSphere);
         deleteMat = new Material(markerShader);
         deleteMat.color = new Color(1f, 0.2f, 0.2f, 0.9f);
         deleteSelectedMat = new Material(markerShader);
@@ -265,6 +289,7 @@ public class RailDrawingController : MonoBehaviour
         placeSelectedMat.color = new Color(1f, 1f, 1f, 0.9f);
 
         // Pre-create marker pool.
+        cylinderMesh = Resources.GetBuiltinResource<Mesh>("New-Cylinder.fbx");
         for (int i = 0; i < MaxCandidates; i++)
         {
             var marker = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
@@ -274,6 +299,8 @@ public class RailDrawingController : MonoBehaviour
             // Remove collider so it doesn't interfere with terrain raycasts.
             var col = marker.GetComponent<Collider>();
             if (col != null) Destroy(col);
+            // Cache the default cylinder mesh.
+            if (cylinderMesh == null) cylinderMesh = marker.GetComponent<MeshFilter>().sharedMesh;
             marker.GetComponent<Renderer>().sharedMaterial = candidateMat;
             marker.SetActive(false);
             markerPool.Add(marker);
@@ -660,45 +687,28 @@ public class RailDrawingController : MonoBehaviour
             for (int k = 0; k < spline.Count; k++)
             {
                 Vector3 wp = network.transform.TransformPoint((Vector3)spline[k].Position);
+                bool isMid = k > 0 && k < spline.Count - 1;
 
-                // Determine the exit direction at this knot.
-                Vector3 exitDir;
-                if (k < spline.Count - 1)
+                Vector3 exitDir, exitDir2 = Vector3.zero;
+                if (isMid)
                 {
-                    // Use TangentOut if available, else knot-to-next-knot.
-                    Vector3 tanOut = network.transform.TransformDirection((Vector3)spline[k].TangentOut);
-                    tanOut.y = 0f;
-                    if (tanOut.sqrMagnitude > 0.001f)
-                        exitDir = tanOut.normalized;
-                    else
-                    {
-                        Vector3 next = network.transform.TransformPoint((Vector3)spline[k + 1].Position);
-                        exitDir = (next - wp); exitDir.y = 0f;
-                        exitDir = exitDir.sqrMagnitude > 0.001f ? exitDir.normalized : Vector3.forward;
-                    }
+                    exitDir  = GetKnotTangentDir(network, spline, s, k, forward: true);
+                    exitDir2 = GetKnotTangentDir(network, spline, s, k, forward: false);
+                }
+                else if (k == 0)
+                {
+                    exitDir = GetKnotTangentDir(network, spline, s, k, forward: true);
                 }
                 else
                 {
-                    // Last knot: use TangentIn (points backward), or prev-to-this.
-                    Vector3 tanIn = network.transform.TransformDirection((Vector3)spline[k].TangentIn);
-                    tanIn.y = 0f;
-                    if (tanIn.sqrMagnitude > 0.001f)
-                        exitDir = tanIn.normalized; // points backward along track
-                    else
-                    {
-                        Vector3 prev = network.transform.TransformPoint((Vector3)spline[k - 1].Position);
-                        exitDir = (prev - wp); exitDir.y = 0f;
-                        exitDir = exitDir.sqrMagnitude > 0.001f ? exitDir.normalized : Vector3.back;
-                    }
+                    exitDir = GetKnotTangentDir(network, spline, s, k, forward: false);
                 }
 
                 selectRefs.Add(new SelectEndpointRef
                 {
-                    splineIndex = s,
-                    knotIndex = k,
-                    knotCount = spline.Count,
-                    worldPos = wp,
-                    exitDir = exitDir
+                    splineIndex = s, knotIndex = k, knotCount = spline.Count,
+                    worldPos = wp, exitDir = exitDir, exitDir2 = exitDir2,
+                    isMidKnot = isMid
                 });
             }
         }
@@ -750,12 +760,12 @@ public class RailDrawingController : MonoBehaviour
         if (selectedSelectEndpoint < 0 || selectedSelectEndpoint >= selectRefs.Count) return;
         var ep = selectRefs[selectedSelectEndpoint];
 
+        Vector3 worldPos = ep.worldPos;
+
         // If this is a mid-spline knot, split the spline at this point first
         // so there's a proper graph node here.
         if (ep.knotIndex > 0 && ep.knotIndex < ep.knotCount - 1)
             SplitSplineAtKnot(ep.splineIndex, ep.knotIndex);
-
-        Vector3 worldPos = ep.worldPos;
 
         // The exitDir points along the EXISTING track. To continue
         // building away from the existing rail we need the opposite direction.
@@ -770,9 +780,23 @@ public class RailDrawingController : MonoBehaviour
         drawingEndExitDir = continuationDir;
         lastDirection = continuationDir;
 
-        // Straight sections get all-direction candidates (knotCount=1).
-        // Curved sections get directional candidates (knotCount=2).
-        knotCount = IsCardinalAligned(continuationDir) ? 1 : 2;
+        if (ep.isMidKnot)
+        {
+            // Mid-curve knot: generate candidates for both tangent
+            // directions so the user can branch either way.
+            Vector3 altDir = -ep.exitDir2;
+            altDir.y = 0f;
+            if (altDir.sqrMagnitude > 0.001f) altDir.Normalize();
+            midKnotAltDirection = altDir;
+        }
+        else
+        {
+            midKnotAltDirection = Vector3.zero;
+        }
+
+        // Curved tangent → constrained candidates (knotCount=2).
+        // Cardinal-aligned → all-direction candidates (knotCount=1).
+        knotCount = IsCardinalAligned(continuationDir) && !ep.isMidKnot ? 1 : 2;
 
         // Switch to Draw tool so candidates show immediately.
         activeTool = ConductorTool.Draw;
@@ -793,6 +817,44 @@ public class RailDrawingController : MonoBehaviour
         if (Mathf.Abs(Vector3.Dot(dir, Vector3.forward)) > threshold) return true;
         if (Mathf.Abs(Vector3.Dot(dir, Vector3.right))   > threshold) return true;
         return false;
+    }
+
+    /// <summary>
+    /// Gets the tangent direction at a knot, projected to XZ and normalized.
+    /// <paramref name="forward"/>: true = TangentOut / toward next knot,
+    /// false = TangentIn / toward previous knot.
+    /// </summary>
+    private static Vector3 GetKnotTangentDir(RailNetworkAuthoring net, Spline spline,
+                                              int splineIndex, int knotIndex, bool forward)
+    {
+        if (forward)
+        {
+            Vector3 tanOut = net.transform.TransformDirection((Vector3)spline[knotIndex].TangentOut);
+            tanOut.y = 0f;
+            if (tanOut.sqrMagnitude > 0.001f) return tanOut.normalized;
+            if (knotIndex < spline.Count - 1)
+            {
+                Vector3 wp = net.transform.TransformPoint((Vector3)spline[knotIndex].Position);
+                Vector3 next = net.transform.TransformPoint((Vector3)spline[knotIndex + 1].Position);
+                Vector3 d = next - wp; d.y = 0f;
+                if (d.sqrMagnitude > 0.001f) return d.normalized;
+            }
+            return Vector3.forward;
+        }
+        else
+        {
+            Vector3 tanIn = net.transform.TransformDirection((Vector3)spline[knotIndex].TangentIn);
+            tanIn.y = 0f;
+            if (tanIn.sqrMagnitude > 0.001f) return tanIn.normalized;
+            if (knotIndex > 0)
+            {
+                Vector3 wp = net.transform.TransformPoint((Vector3)spline[knotIndex].Position);
+                Vector3 prev = net.transform.TransformPoint((Vector3)spline[knotIndex - 1].Position);
+                Vector3 d = prev - wp; d.y = 0f;
+                if (d.sqrMagnitude > 0.001f) return d.normalized;
+            }
+            return Vector3.back;
+        }
     }
 
     /// <summary>
@@ -1274,6 +1336,15 @@ public class RailDrawingController : MonoBehaviour
             RailNode node = railGraph.FindNodeAtPosition(worldPos, 0.6f);
             if (node != null && node.CanAddConnection)
             {
+                // Block branching from any node that's within 7 tiles of an
+                // existing junction — unless the node itself IS a junction
+                // (you should always be able to add exits to a junction).
+                if (!node.IsJunction && IsNearExistingJunction(node, 7f))
+                {
+                    knotCount--;
+                    Debug.Log($"[RailDrawing] First knot rejected — node too close to an existing junction ({worldPos})");
+                    return;
+                }
                 worldPos = node.worldPosition;
                 snappedToNode = true;
                 Debug.Log($"[RailDrawing] First knot snapped to existing node at {worldPos}");
@@ -1295,6 +1366,7 @@ public class RailDrawingController : MonoBehaviour
         drawingStartExitDir = Vector3.zero;
         drawingStartGroupHint = -1;
         drawingEndGroupHint = -1;
+        midKnotAltDirection = Vector3.zero;
 
         if (terrainGrader != null)
             terrainGrader.GradeAroundPoint(worldPos);
@@ -1313,11 +1385,18 @@ public class RailDrawingController : MonoBehaviour
 
         network.SetLastKnotTangentOut(snap.tangentOut);
         network.AddKnotExplicit(snap.position, snap.tangentIn, Vector3.zero);
+        previousKnotPos = drawingStartPos;
         lastDirection = snap.exitDirection;
-        drawingStartExitDir = snap.exitDirection;
+        // Start exit = tangent leaving the first knot (= forward direction).
+        // snap.exitDirection is the tangent at the arc ENDPOINT which differs
+        // for curves and would store the wrong direction at the start node.
+        drawingStartExitDir = snap.tangentOut.normalized;
         drawingEndExitDir = snap.exitDirection;
         drawingStartGroupHint = snap.cardinalGroup;
         drawingEndGroupHint = snap.cardinalGroup;
+
+        // Direction is now committed; clear the dual-direction state.
+        midKnotAltDirection = Vector3.zero;
 
         GradeArcPoints(snap);
 
@@ -1371,6 +1450,7 @@ public class RailDrawingController : MonoBehaviour
 
         network.SetLastKnotTangentOut(snap.tangentOut);
         network.AddKnotExplicit(snap.position, snap.tangentIn, Vector3.zero);
+        previousKnotPos = prevKnot;
         lastDirection = snap.exitDirection;
         drawingStartExitDir = snap.exitDirection;
         drawingEndExitDir = snap.exitDirection;
@@ -1431,6 +1511,8 @@ public class RailDrawingController : MonoBehaviour
             // Place the final endpoint.
             network.AddKnotExplicit(snap.position, snap.tangentIn, Vector3.zero);
             knotCount++;
+            previousKnotPos = (snap.completionKnots.Length > 0)
+                ? snap.completionKnots[^1].position : network.GetSecondToLastKnotWorld() ?? snap.position;
             lastDirection = snap.exitDirection;
             drawingEndExitDir = snap.exitDirection;
             drawingEndGroupHint = snap.cardinalGroup;
@@ -1452,6 +1534,7 @@ public class RailDrawingController : MonoBehaviour
 
         network.SetLastKnotTangentOut(snap.tangentOut);
         network.AddKnotExplicit(snap.position, snap.tangentIn, Vector3.zero);
+        previousKnotPos = network.GetSecondToLastKnotWorld() ?? snap.position;
         lastDirection = snap.exitDirection;
         drawingEndExitDir = snap.exitDirection;
         drawingEndGroupHint = snap.cardinalGroup;
@@ -1475,6 +1558,189 @@ public class RailDrawingController : MonoBehaviour
                 Debug.Log($"[RailDrawing] Join detected → finishing spline at node {snap.joinNode?.worldPosition}");
             }
             FinishSpline();
+        }
+    }
+
+    // ─── Parallel Return Detection ─────────────────────────────────────
+
+    /// <summary>
+    /// Finds the one candidate that mirrors the last placed segment, which
+    /// would return the track to a direction parallel to the original.
+    /// The mirror is computed by reflecting the last segment’s offset across
+    /// the current forward direction (same forward, opposite lateral).
+    /// </summary>
+    private void TagParallelReturnCandidate(Vector3 lastKnot, Vector3 forward)
+    {
+        if (knotCount < 2) return; // need at least one placed segment to mirror
+        if (forward.sqrMagnitude < 0.1f) return;
+
+        Vector3 right = Vector3.Cross(Vector3.up, forward).normalized;
+
+        // Offset of the last placed segment.
+        Vector3 delta = lastKnot - previousKnotPos;
+        delta.y = 0f;
+
+        // Decompose into the current forward frame.
+        float fComp = Vector3.Dot(delta, forward);
+        float lComp = Vector3.Dot(delta, right);
+
+        // If the last segment was straight (no lateral), there's no mirror to show.
+        if (Mathf.Abs(lComp) < 0.3f) return;
+
+        // Mirror: same forward component, opposite lateral component → continues arc.
+        Vector3 mirrorTarget = lastKnot + forward * fComp - right * lComp;
+        mirrorTarget.y = lastKnot.y;
+        mirrorTarget = SnapPosToTileCenter(mirrorTarget);
+
+        // Straighten: same offset repeated → reverts curve back to straight.
+        Vector3 straightenTarget = lastKnot + delta;
+        straightenTarget.y = lastKnot.y;
+        straightenTarget = SnapPosToTileCenter(straightenTarget);
+
+        float bestMirrorDist = 0.6f;
+        int bestMirrorIdx = -1;
+        float bestStraightenDist = 0.6f;
+        int bestStraightenIdx = -1;
+
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            Vector3 cFlat = new Vector3(candidates[i].position.x, 0, candidates[i].position.z);
+
+            float dm = Vector3.Distance(cFlat, new Vector3(mirrorTarget.x, 0, mirrorTarget.z));
+            if (dm < bestMirrorDist)
+            {
+                bestMirrorDist = dm;
+                bestMirrorIdx = i;
+            }
+
+            float ds = Vector3.Distance(cFlat, new Vector3(straightenTarget.x, 0, straightenTarget.z));
+            if (ds < bestStraightenDist)
+            {
+                bestStraightenDist = ds;
+                bestStraightenIdx = i;
+            }
+        }
+
+        if (bestMirrorIdx >= 0)
+        {
+            var c = candidates[bestMirrorIdx];
+            c.isParallelReturn = true;
+            candidates[bestMirrorIdx] = c;
+        }
+
+        // Don't flag the same candidate as both.
+        if (bestStraightenIdx >= 0 && bestStraightenIdx != bestMirrorIdx)
+        {
+            var c = candidates[bestStraightenIdx];
+            c.isStraightenReturn = true;
+            candidates[bestStraightenIdx] = c;
+        }
+    }
+
+    /// <summary>
+    /// When drawing from a junction node, look at all existing exit curves and
+    /// flag candidates that would mirror those curves across the junction's axes.
+    /// This lets the player build symmetrical junction exits easily.
+    /// </summary>
+    private void TagJunctionMirrorCandidates()
+    {
+        if (railGraph == null || candidates.Count == 0) return;
+
+        // Find the junction node at our drawing start.
+        RailNode junctionNode = railGraph.FindNodeAtPosition(drawingStartPos, 0.6f);
+        if (junctionNode == null || junctionNode.connections.Count < 1) return;
+
+        Vector3 jPos = junctionNode.worldPosition;
+        jPos.y = 0f;
+
+        // Collect the offset of each existing exit's second knot relative to the junction.
+        var exitDeltas = new List<Vector3>();
+        for (int c = 0; c < junctionNode.connections.Count; c++)
+        {
+            RailSegment seg = junctionNode.connections[c];
+            if (seg.splineIndex < 0 || seg.splineIndex >= network.Container.Splines.Count) continue;
+            var spline = network.Container.Splines[seg.splineIndex];
+            if (spline.Count < 2) continue;
+
+            // Determine which end of the spline is at the junction.
+            Vector3 firstKnotWorld = network.transform.TransformPoint((Vector3)spline[0].Position);
+            Vector3 lastKnotWorld  = network.transform.TransformPoint((Vector3)spline[spline.Count - 1].Position);
+
+            Vector3 secondKnotWorld;
+            float distFirst = Vector3.Distance(new Vector3(firstKnotWorld.x, 0, firstKnotWorld.z),
+                                                new Vector3(junctionNode.worldPosition.x, 0, junctionNode.worldPosition.z));
+            float distLast  = Vector3.Distance(new Vector3(lastKnotWorld.x, 0, lastKnotWorld.z),
+                                                new Vector3(junctionNode.worldPosition.x, 0, junctionNode.worldPosition.z));
+
+            if (distFirst < distLast)
+                secondKnotWorld = network.transform.TransformPoint((Vector3)spline[1].Position);
+            else
+                secondKnotWorld = network.transform.TransformPoint((Vector3)spline[spline.Count - 2].Position);
+
+            Vector3 delta = secondKnotWorld - junctionNode.worldPosition;
+            delta.y = 0f;
+
+            // Only count non-straight exits (delta has both forward and lateral components).
+            float ax = Mathf.Abs(delta.x);
+            float az = Mathf.Abs(delta.z);
+            if (ax < 0.3f || az < 0.3f) continue; // Straight exit — skip.
+
+            exitDeltas.Add(delta);
+        }
+
+        if (exitDeltas.Count == 0) return;
+
+        // For each exit delta, generate all 7 symmetry transformations
+        // (reflections + 90°/270° rotations) to cover opposite AND adjacent directions.
+        var mirrorTargets = new HashSet<Vector2Int>(); // snap to avoid duplicates
+        foreach (var delta in exitDeltas)
+        {
+            Vector3[] symmetries = new Vector3[]
+            {
+                new Vector3(-delta.x,  0f,  delta.z), // reflect X
+                new Vector3( delta.x,  0f, -delta.z), // reflect Z
+                new Vector3(-delta.x,  0f, -delta.z), // rotate 180°
+                new Vector3( delta.z,  0f,  delta.x), // reflect diagonal
+                new Vector3(-delta.z,  0f,  delta.x), // rotate 90° CCW
+                new Vector3( delta.z,  0f, -delta.x), // rotate 90° CW
+                new Vector3(-delta.z,  0f, -delta.x), // reflect anti-diagonal
+            };
+            foreach (var r in symmetries)
+            {
+                Vector3 target = junctionNode.worldPosition + r;
+                target.y = 0f;
+                target = SnapPosToTileCenter(target);
+                int tx = Mathf.RoundToInt(target.x * 10f);
+                int tz = Mathf.RoundToInt(target.z * 10f);
+                mirrorTargets.Add(new Vector2Int(tx, tz));
+            }
+        }
+
+        // Also exclude positions that already have an existing exit (don't star what's already built).
+        var existingPositions = new HashSet<Vector2Int>();
+        foreach (var delta in exitDeltas)
+        {
+            Vector3 pos = junctionNode.worldPosition + delta;
+            pos.y = 0f;
+            pos = SnapPosToTileCenter(pos);
+            existingPositions.Add(new Vector2Int(Mathf.RoundToInt(pos.x * 10f), Mathf.RoundToInt(pos.z * 10f)));
+        }
+
+        // Flag matching candidates.
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            if (candidates[i].isJoin) continue; // don't override join markers
+            Vector3 cPos = candidates[i].position;
+            cPos.y = 0f;
+            int cx = Mathf.RoundToInt(cPos.x * 10f);
+            int cz = Mathf.RoundToInt(cPos.z * 10f);
+            var key = new Vector2Int(cx, cz);
+            if (mirrorTargets.Contains(key) && !existingPositions.Contains(key))
+            {
+                var snap = candidates[i];
+                snap.isJunctionMirror = true;
+                candidates[i] = snap;
+            }
         }
     }
 
@@ -1682,6 +1948,13 @@ public class RailDrawingController : MonoBehaviour
         GatherOccupiedPositions();
 
         BuildCandidatesForDirection(lastKnot, forward, cursorWorldPos);
+
+        // If branching from a mid-curve knot, also build candidates for the
+        // opposite tangent direction so both sides are available.
+        if (midKnotAltDirection.sqrMagnitude > 0.01f)
+        {
+            BuildCandidatesForDirection(lastKnot, midKnotAltDirection, cursorWorldPos);
+        }
     }
 
     private void BuildCandidatesForDirection(Vector3 lastKnot, Vector3 forward, Vector3 cursorWorldPos, int maxStraight = -1, bool skipFlip = false)
@@ -1756,7 +2029,7 @@ public class RailDrawingController : MonoBehaviour
         // 2. Curve candidates: for each reachable tile center, compute the unique
         //    pure-arc radius R = (f² + l²) / (2|l|) that makes the turning circle
         //    pass exactly through both S and T.  No straight tail needed.
-        float minR = RailConstants.MinTurnRadius;
+        float minR = minTurnRadius;
         float maxArcRad = RailConstants.MaxArcAngleDeg * Mathf.Deg2Rad;
 
         // Iterate only tiles within CandidateViewRadius of the cursor.
@@ -1857,7 +2130,10 @@ public class RailDrawingController : MonoBehaviour
                 tangentIn      = -exitDir * bezierD,
                 arcPoints      = points,
                 isValid        = true,
-                cardinalGroup  = group
+                cardinalGroup  = group,
+                isParallelReturn = false,
+                isStraightenReturn = false,
+                isJunctionMirror = false
             });
         }
     }
@@ -1900,6 +2176,13 @@ public class RailDrawingController : MonoBehaviour
                         c.isValid = false;
                         candidates[i] = c;
                         continue;
+                    }
+
+                    // Block joins to any node that's within 7 tiles of an
+                    // existing junction — unless the node itself IS a junction.
+                    if (!node.IsJunction && IsNearExistingJunction(node, 7f))
+                    {
+                        continue; // skip — don't tag as join
                     }
 
                     c.isJoin    = true;
@@ -1947,6 +2230,27 @@ public class RailDrawingController : MonoBehaviour
 
         // Remove invalidated candidates.
         candidates.RemoveAll(c => !c.isValid);
+    }
+
+    /// <summary>
+    /// Returns true if any existing junction node (3+ connections) is within
+    /// the specified distance of the given node (excluding the node itself).
+    /// Used to enforce minimum spacing between junctions by preventing
+    /// forking/joining at nodes near existing junctions.
+    /// </summary>
+    private bool IsNearExistingJunction(RailNode node, float minDist)
+    {
+        if (railGraph == null) return false;
+        float minDistSq = minDist * minDist;
+        foreach (var other in railGraph.Nodes)
+        {
+            if (other == node) continue;
+            if (!other.IsJunction) continue;
+            Vector3 diff = other.worldPosition - node.worldPosition;
+            diff.y = 0f;
+            if (diff.sqrMagnitude < minDistSq) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -2012,8 +2316,8 @@ public class RailDrawingController : MonoBehaviour
         toTarget.y = 0f;
         float lateralDist = Mathf.Abs(Vector3.Dot(toTarget, Vector3.Cross(Vector3.up, forward).normalized));
 
-        // Use MinTurnRadius if it fits; otherwise clamp to lateral distance.
-        return Mathf.Max(RailConstants.MinTurnRadius, lateralDist * 0.5f);
+        // Use minTurnRadius if it fits; otherwise clamp to lateral distance.
+        return Mathf.Max(minTurnRadius, lateralDist * 0.5f);
     }
 
     /// <summary>
@@ -2293,6 +2597,8 @@ public class RailDrawingController : MonoBehaviour
         }
         BuildSplineSamples();
         TagJoinCandidates(lastKnotOpt.Value, lastDirection);
+        TagParallelReturnCandidate(lastKnotOpt.Value, lastDirection);
+        TagJunctionMirrorCandidates();
 
         // Find closest candidate to cursor (XZ distance).
         float bestDistSq = float.MaxValue;
@@ -2332,10 +2638,32 @@ public class RailDrawingController : MonoBehaviour
                 else
                     mat = GetCardinalGroupMaterial(candidates[i].cardinalGroup);
 
+                // Special markers: star for straighten-return / junction mirror, sphere for continue-arc.
+                bool isStraighten = candidates[i].isStraightenReturn && !isSel && !isJoin;
+                bool isContinueArc = candidates[i].isParallelReturn && !isSel && !isJoin;
+                bool isJuncMirror = candidates[i].isJunctionMirror && !isSel && !isJoin;
+                if (isStraighten) mat = parallelReturnMat;
+                else if (isJuncMirror) mat = parallelReturnMat;
+                else if (isContinueArc) mat = parallelReturnMat;
+
                 markerPool[i].GetComponent<Renderer>().sharedMaterial = mat;
-                markerPool[i].transform.localScale = isSel
-                    ? new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f)
-                    : new Vector3(markerRadius, 0.15f, markerRadius);
+                var mf = markerPool[i].GetComponent<MeshFilter>();
+                Mesh meshToUse = cylinderMesh;
+                if (isStraighten) meshToUse = starMesh;
+                else if (isJuncMirror) meshToUse = starMesh;
+                else if (isContinueArc) meshToUse = sphereMesh;
+                if (mf != null) mf.sharedMesh = meshToUse;
+
+                Vector3 scale;
+                if (isStraighten || isJuncMirror)
+                    scale = new Vector3(1f, 1f, 1f);
+                else if (isContinueArc)
+                    scale = new Vector3(markerRadius * 1.8f, markerRadius * 1.8f, markerRadius * 1.8f);
+                else if (isSel)
+                    scale = new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f);
+                else
+                    scale = new Vector3(markerRadius, 0.15f, markerRadius);
+                markerPool[i].transform.localScale = scale;
             }
             else
             {
@@ -2485,6 +2813,16 @@ public class RailDrawingController : MonoBehaviour
             // Exit direction at end node points backward (away from the node along the track).
             Vector3 endExit = -drawingEndExitDir;
 
+            // Recompute both group hints from the actual exit directions to
+            // ensure they are consistent.  The drawing-system's cardinalGroup
+            // reflects the forward direction which matches startExit, but
+            // endExit points the opposite way and needs recomputation.
+            drawingStartGroupHint = ComputeCardinalGroup(startExit);
+            drawingEndGroupHint   = ComputeCardinalGroup(endExit);
+
+            Debug.Log($"[FinishSpline] startExit=({startExit.x:F2},{startExit.z:F2}) grp={drawingStartGroupHint} | " +
+                      $"endExit=({endExit.x:F2},{endExit.z:F2}) grp={drawingEndGroupHint}");
+
             railGraph.RegisterSegment(startNode, endNode, splineIdx, startExit, endExit,
                                        drawingStartGroupHint, drawingEndGroupHint);
         }
@@ -2503,5 +2841,73 @@ public class RailDrawingController : MonoBehaviour
 
         if (railLineRenderer != null)
             railLineRenderer.RebuildFromSplines(network);
+    }
+
+    /// <summary>
+    /// Procedurally generates a flat star mesh (XZ plane) with the given number of
+    /// points, outer/inner radii, and height (Y thickness for visibility).
+    /// </summary>
+    private static Mesh BuildStarMesh(int points, float outerR, float innerR, float height)
+    {
+        int verts = points * 2;
+        var top    = new Vector3[verts];
+        var bottom = new Vector3[verts];
+        float halfH = height * 0.5f;
+
+        for (int i = 0; i < verts; i++)
+        {
+            float angle = Mathf.PI * 2f * i / verts - Mathf.PI * 0.5f;
+            float r = (i % 2 == 0) ? outerR : innerR;
+            float x = Mathf.Cos(angle) * r;
+            float z = Mathf.Sin(angle) * r;
+            top[i]    = new Vector3(x, halfH, z);
+            bottom[i] = new Vector3(x, -halfH, z);
+        }
+
+        // Build triangles: top cap fan + bottom cap fan + side quads.
+        var vertices = new List<Vector3>();
+        var triangles = new List<int>();
+
+        // Top cap.
+        int centerIdx = vertices.Count;
+        vertices.Add(new Vector3(0, halfH, 0));
+        for (int i = 0; i < verts; i++) vertices.Add(top[i]);
+        for (int i = 0; i < verts; i++)
+        {
+            triangles.Add(centerIdx);
+            triangles.Add(centerIdx + 1 + i);
+            triangles.Add(centerIdx + 1 + (i + 1) % verts);
+        }
+
+        // Bottom cap.
+        int bCenterIdx = vertices.Count;
+        vertices.Add(new Vector3(0, -halfH, 0));
+        for (int i = 0; i < verts; i++) vertices.Add(bottom[i]);
+        for (int i = 0; i < verts; i++)
+        {
+            triangles.Add(bCenterIdx);
+            triangles.Add(bCenterIdx + 1 + (i + 1) % verts);
+            triangles.Add(bCenterIdx + 1 + i);
+        }
+
+        // Side quads.
+        for (int i = 0; i < verts; i++)
+        {
+            int next = (i + 1) % verts;
+            int a = vertices.Count; vertices.Add(top[i]);
+            int b = vertices.Count; vertices.Add(top[next]);
+            int c = vertices.Count; vertices.Add(bottom[next]);
+            int d = vertices.Count; vertices.Add(bottom[i]);
+            triangles.Add(a); triangles.Add(b); triangles.Add(c);
+            triangles.Add(a); triangles.Add(c); triangles.Add(d);
+        }
+
+        var mesh = new Mesh();
+        mesh.name = "StarMarker";
+        mesh.SetVertices(vertices);
+        mesh.SetTriangles(triangles, 0);
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+        return mesh;
     }
 }

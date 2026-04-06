@@ -104,31 +104,60 @@ public class JunctionGateUI : MonoBehaviour
     }
 
     /// <summary>
-    /// Projects an arbitrary XZ world direction from the junction's position
-    /// into screen space and returns the angle (Atan2(screenY, screenX)).
+    /// Projects an arbitrary XZ world direction into the texture's 2D
+    /// coordinate system, accounting for the canvas billboard orientation
+    /// and the vertical mirror applied after painting.
+    /// Computes the canvas rotation directly from the camera position so
+    /// the result is independent of script execution order.
     /// </summary>
     private float ComputeScreenAngleForDirection(Vector3 worldDir)
     {
         Camera cam = _cachedCam;
         if (cam == null) return 0f;
 
-        Vector3 origin  = _node.worldPosition;
-        Vector3 tip     = origin + worldDir;
-        Vector3 oScreen = cam.WorldToScreenPoint(origin);
-        Vector3 tScreen = cam.WorldToScreenPoint(tip);
+        // Compute the canvas orientation ourselves (same as WorldCanvasFaceCamera)
+        // so we don't depend on LateUpdate execution order.
+        Vector3 dirToCamera = cam.transform.position - _node.worldPosition;
+        if (dirToCamera.sqrMagnitude < 0.001f) return 0f;
 
-        if (oScreen.z < 0f || tScreen.z < 0f) return 0f;
+        Quaternion canvasRot = Quaternion.LookRotation(-dirToCamera.normalized, cam.transform.up);
+        Vector3 canvasRight = canvasRot * Vector3.right;
+        Vector3 canvasUp    = canvasRot * Vector3.up;
 
-        Vector2 dir = new Vector2(tScreen.x - oScreen.x, tScreen.y - oScreen.y);
-        if (dir.sqrMagnitude < 0.001f) return 0f;
+        float localX = Vector3.Dot(worldDir, canvasRight);
+        float localY = Vector3.Dot(worldDir, canvasUp);
 
-        return Mathf.Atan2(dir.y, dir.x);
+        if (localX * localX + localY * localY < 0.0001f) return 0f;
+
+        return Mathf.Atan2(localY, localX);
     }
 
     // ─── Rendering ───────────────────────────────────────────────────────────
 
     private void Paint(float orientRad)
     {
+        // Compute actual screen-space angle for each group center direction.
+        // This ensures the pizza slices match the pip positions exactly.
+        float[] groupScreenAngles = new float[4];
+        for (int g = 0; g < 4; g++)
+        {
+            float deg = _node.GroupCenterAngle(g);
+            float rad = deg * Mathf.Deg2Rad;
+            Vector3 worldDir = new Vector3(Mathf.Sin(rad), 0f, Mathf.Cos(rad));
+            groupScreenAngles[g] = ComputeScreenAngleForDirection(worldDir);
+        }
+
+        // Compute boundary angles (midpoint between adjacent groups in screen space).
+        float[] boundaryAngles = new float[4];
+        for (int g = 0; g < 4; g++)
+        {
+            int next = (g + 1) % 4;
+            float a = groupScreenAngles[g];
+            float b = groupScreenAngles[next];
+            // Use angular midpoint (handles wrap-around).
+            float delta = Mathf.DeltaAngle(a * Mathf.Rad2Deg, b * Mathf.Rad2Deg) * Mathf.Deg2Rad;
+            boundaryAngles[g] = a + delta * 0.5f;
+        }
 
         // Pass 1 – per-pixel arc colouring
         for (int y = 0; y < Size; y++)
@@ -146,12 +175,32 @@ public class JunctionGateUI : MonoBehaviour
 
                 if (dist >= InnerRadius)
                 {
-                    // angle rotated by orientation, offset +PI/4 so group 0 centre = east
-                    float a       = Mathf.Atan2(fy, fx) - orientRad;
-                    float norm    = Mathf.Repeat(a + Mathf.PI * 0.25f, Mathf.PI * 2f);
-                    float inGroup = Mathf.Repeat(norm, Mathf.PI * 0.5f);
-                    bool  inGap   = inGroup < GroupGap * 0.5f ||
-                                    inGroup > Mathf.PI * 0.5f - GroupGap * 0.5f;
+                    // Negate fy to compensate for the vertical mirror applied after painting,
+                    // so the wedge angles match the pip placement angles exactly.
+                    float pixelAngle = Mathf.Atan2(-fy, fx);
+
+                    // Find which group this pixel belongs to by checking angular
+                    // distance to each group's screen-space center.
+                    int bestGroup = 0;
+                    float bestDelta = float.MaxValue;
+                    for (int g = 0; g < 4; g++)
+                    {
+                        float d = Mathf.Abs(Mathf.DeltaAngle(
+                            pixelAngle * Mathf.Rad2Deg,
+                            groupScreenAngles[g] * Mathf.Rad2Deg));
+                        if (d < bestDelta) { bestDelta = d; bestGroup = g; }
+                    }
+
+                    // Check if we're near a boundary (gap).
+                    bool inGap = false;
+                    float gapHalfDeg = GroupGap * 0.5f * Mathf.Rad2Deg;
+                    for (int g = 0; g < 4; g++)
+                    {
+                        float distToBoundary = Mathf.Abs(Mathf.DeltaAngle(
+                            pixelAngle * Mathf.Rad2Deg,
+                            boundaryAngles[g] * Mathf.Rad2Deg));
+                        if (distToBoundary < gapHalfDeg) { inGap = true; break; }
+                    }
 
                     if (inGap)
                     {
@@ -159,8 +208,7 @@ public class JunctionGateUI : MonoBehaviour
                     }
                     else
                     {
-                        int group = Mathf.FloorToInt(norm / (Mathf.PI * 0.5f)) % 4;
-                        c = _node.GetGroupExitCount(group) == 0 ? ColEmptyGroup : ColInactiveArc;
+                        c = _node.GetGroupExitCount(bestGroup) == 0 ? ColEmptyGroup : ColInactiveArc;
                     }
                 }
             }
@@ -218,6 +266,10 @@ public class JunctionGateUI : MonoBehaviour
         // Pass 3 – centre dot
         FillCircle(0.5f, 0.5f, CenterRadius, ColCenter);
 
+        // Pass 4 – junction ID number in the center
+        if (_node.junctionId >= 0)
+            DrawNumber(_node.junctionId, Size / 2, Size / 2, 2, Color.white);
+
         // Mirror vertically — swap rows so the texture reads correctly
         // when the canvas faces the camera.
         for (int row = 0; row < Size / 2; row++)
@@ -251,6 +303,59 @@ public class JunctionGateUI : MonoBehaviour
             int px = cx + dx, py = cy + dy;
             if ((uint)px >= (uint)Size || (uint)py >= (uint)Size) continue;
             _pixels[py * Size + px] = col;
+        }
+    }
+
+    // ─── Tiny bitmap digit renderer ──────────────────────────────────────
+
+    // 3×5 bitmap font for digits 0-9 (each row is 3 bits, MSB-left).
+    private static readonly byte[][] DigitBitmaps = new byte[][]
+    {
+        new byte[] { 0b111, 0b101, 0b101, 0b101, 0b111 }, // 0
+        new byte[] { 0b010, 0b110, 0b010, 0b010, 0b111 }, // 1
+        new byte[] { 0b111, 0b001, 0b111, 0b100, 0b111 }, // 2
+        new byte[] { 0b111, 0b001, 0b111, 0b001, 0b111 }, // 3
+        new byte[] { 0b101, 0b101, 0b111, 0b001, 0b001 }, // 4
+        new byte[] { 0b111, 0b100, 0b111, 0b001, 0b111 }, // 5
+        new byte[] { 0b111, 0b100, 0b111, 0b101, 0b111 }, // 6
+        new byte[] { 0b111, 0b001, 0b010, 0b010, 0b010 }, // 7
+        new byte[] { 0b111, 0b101, 0b111, 0b101, 0b111 }, // 8
+        new byte[] { 0b111, 0b101, 0b111, 0b001, 0b111 }, // 9
+    };
+
+    private void DrawNumber(int number, int cx, int cy, int scale, Color col)
+    {
+        string digits = number.ToString();
+        int digitW = 3 * scale + scale; // 3 pixels wide + 1 pixel gap, scaled
+        int totalW = digits.Length * digitW - scale; // no gap after last
+        int startX = cx - totalW / 2;
+        int startY = cy - (5 * scale) / 2;
+
+        for (int d = 0; d < digits.Length; d++)
+        {
+            int digit = digits[d] - '0';
+            if (digit < 0 || digit > 9) continue;
+            DrawDigit(digit, startX + d * digitW, startY, scale, col);
+        }
+    }
+
+    private void DrawDigit(int digit, int x0, int y0, int scale, Color col)
+    {
+        byte[] bmp = DigitBitmaps[digit];
+        for (int row = 0; row < 5; row++)
+        {
+            for (int bit = 0; bit < 3; bit++)
+            {
+                if ((bmp[row] & (1 << (2 - bit))) == 0) continue;
+                for (int sy = 0; sy < scale; sy++)
+                for (int sx = 0; sx < scale; sx++)
+                {
+                    int px = x0 + bit * scale + sx;
+                    int py = y0 + row * scale + sy;
+                    if ((uint)px < (uint)Size && (uint)py < (uint)Size)
+                        _pixels[py * Size + px] = col;
+                }
+            }
         }
     }
 }
