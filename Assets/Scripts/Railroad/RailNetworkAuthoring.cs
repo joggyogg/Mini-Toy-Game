@@ -204,30 +204,6 @@ public class RailNetworkAuthoring : MonoBehaviour
         return list.Count - 1;
     }
 
-    /// <summary>
-    /// Returns the world position of the second-to-last knot on the active spline, or null.
-    /// </summary>
-    public Vector3? GetSecondToLastKnotWorld()
-    {
-        if (activeSplineIndex < 0) return null;
-        var spline = Container.Splines[activeSplineIndex];
-        if (spline.Count < 2) return null;
-        float3 local = spline[spline.Count - 2].Position;
-        return transform.TransformPoint(local);
-    }
-
-    /// <summary>
-    /// Removes the last knot from the active spline. Returns true if removed.
-    /// </summary>
-    public bool RemoveLastKnot()
-    {
-        if (activeSplineIndex < 0) return false;
-        var spline = Container.Splines[activeSplineIndex];
-        if (spline.Count == 0) return false;
-        spline.RemoveAt(spline.Count - 1);
-        return true;
-    }
-
     private void StartNewSpline()
     {
         var list = new List<Spline>(Container.Splines);
