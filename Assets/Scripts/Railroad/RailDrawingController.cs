@@ -168,6 +168,7 @@ public class RailDrawingController : MonoBehaviour
         public Vector3 exitDir;     // direction the track heads away from this knot
         public Vector3 exitDir2;    // second tangent direction (mid-knot only; zero otherwise)
         public bool isMidKnot;      // true when knot has two valid exit directions
+        public bool isMidSplineSample; // true = not at a knot, needs SplitSegmentAtPosition
     }
     private readonly List<SelectEndpointRef> selectRefs = new();
     private int selectedSelectEndpoint = -1;
@@ -185,6 +186,13 @@ public class RailDrawingController : MonoBehaviour
     [SerializeField] private float switchPathLength = 5f;
     private const float SwitchPathYOffset = 0.15f;
     private const int SwitchPathSamples = 30;
+
+    // ─── Join Arm Lines ─────────────────────────────────────────────────
+
+    private readonly List<LineRenderer> joinArmLines = new();
+    private Material joinArmMat;
+    private const float JoinArmLineWidth = 0.12f;
+    private const float JoinArmYOffset = 0.3f;
 
     // ─── Place Mode ─────────────────────────────────────────────────────
 
@@ -213,8 +221,19 @@ public class RailDrawingController : MonoBehaviour
     {
         public Vector3 worldPos;
         public int splineIndex;
+        public Vector3 tangentDir; // normalized world-space tangent at this sample
+        public float t;            // parametric position [0..1] on the spline
     }
     private readonly List<SplineSample> splineSamples = new();
+
+    /// <summary>
+    /// A single cubic Bézier segment in world-space XZ, with a precomputed AABB.
+    /// </summary>
+    private struct BezierSegXZ
+    {
+        public float P0x, P0z, P1x, P1z, P2x, P2z, P3x, P3z;
+        public float minX, maxX, minZ, maxZ; // AABB of the 4 control points
+    }
 
     // ─── Init ────────────────────────────────────────────────────────────
 
@@ -283,6 +302,8 @@ public class RailDrawingController : MonoBehaviour
         westMat.color = new Color(0.95f, 0.30f, 0.10f, 0.9f);   // Orange/Red
         switchPathMat = new Material(Shader.Find("Sprites/Default"));
         switchPathMat.color = new Color(0.1f, 1f, 0.2f, 0.9f);
+        joinArmMat = new Material(Shader.Find("Sprites/Default"));
+        joinArmMat.color = new Color(0.6f, 0.2f, 1f, 0.7f); // purple, semi-transparent
         placeMat = new Material(markerShader);
         placeMat.color = new Color(0.2f, 0.8f, 1f, 0.9f);
         placeSelectedMat = new Material(markerShader);
@@ -711,6 +732,52 @@ public class RailDrawingController : MonoBehaviour
                     isMidKnot = isMid
                 });
             }
+
+            // Also add mid-spline tile-grid samples so the user can fork
+            // from any tile position along the spline, not just knots.
+            Vector3 sp0 = network.EvaluatePositionWorld(s, 0f);
+            Vector3 sp1 = network.EvaluatePositionWorld(s, 1f);
+            float approxLen = Vector3.Distance(sp0, sp1);
+            int sampleCount = Mathf.Max((int)(approxLen * 2f), 20);
+
+            for (int si = 1; si < sampleCount; si++)
+            {
+                float t = (float)si / sampleCount;
+                Vector3 rawPos = network.EvaluatePositionWorld(s, t);
+                Vector3 snapped = SnapPosToTileCenter(rawPos);
+                snapped.y = rawPos.y;
+
+                // Skip if too close to an existing knot ref (they take priority).
+                bool nearKnot = false;
+                for (int r = 0; r < selectRefs.Count; r++)
+                {
+                    Vector3 d = selectRefs[r].worldPos - snapped;
+                    d.y = 0f;
+                    if (d.sqrMagnitude < 0.8f * 0.8f) { nearKnot = true; break; }
+                }
+                if (nearKnot) continue;
+
+                // Dedup against previously added mid-spline samples on this spline.
+                bool dup = false;
+                for (int r = selectRefs.Count - 1; r >= 0; r--)
+                {
+                    if (!selectRefs[r].isMidSplineSample) break; // stop at knot refs
+                    Vector3 d = selectRefs[r].worldPos - snapped;
+                    d.y = 0f;
+                    if (d.sqrMagnitude < 0.8f * 0.8f) { dup = true; break; }
+                }
+                if (dup) continue;
+
+                Vector3 tangent = ((Vector3)network.Container.EvaluateTangent(s, t)).normalized;
+                if (tangent.sqrMagnitude < 0.01f) tangent = Vector3.forward;
+
+                selectRefs.Add(new SelectEndpointRef
+                {
+                    splineIndex = s, knotIndex = -1, knotCount = spline.Count,
+                    worldPos = snapped, exitDir = tangent, exitDir2 = -tangent,
+                    isMidKnot = true, isMidSplineSample = true
+                });
+            }
         }
 
         // Find nearest endpoint to cursor.
@@ -762,9 +829,17 @@ public class RailDrawingController : MonoBehaviour
 
         Vector3 worldPos = ep.worldPos;
 
+        // Mid-spline sample (no knot here yet): split the segment to create a junction node.
+        if (ep.isMidSplineSample)
+        {
+            RailNode splitNode = railGraph.SplitSegmentAtPosition(ep.splineIndex, worldPos);
+            if (splitNode == null) return;
+            if (railLineRenderer != null)
+                railLineRenderer.RebuildFromSplines(network);
+        }
         // If this is a mid-spline knot, split the spline at this point first
         // so there's a proper graph node here.
-        if (ep.knotIndex > 0 && ep.knotIndex < ep.knotCount - 1)
+        else if (ep.knotIndex > 0 && ep.knotIndex < ep.knotCount - 1)
             SplitSplineAtKnot(ep.splineIndex, ep.knotIndex);
 
         // The exitDir points along the EXISTING track. To continue
@@ -1128,6 +1203,61 @@ public class RailDrawingController : MonoBehaviour
         {
             if (switchPathLines[i] != null)
                 switchPathLines[i].positionCount = 0;
+        }
+    }
+
+    private void ShowJoinArmLines()
+    {
+        int lineIdx = 0;
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            if (!candidates[i].isJoin) continue;
+            if (candidates[i].arcPoints == null || candidates[i].arcPoints.Length < 2) continue;
+            if (i == selectedCandidate) continue; // selected candidate uses the main preview line
+
+            // Ensure pool is big enough.
+            while (lineIdx >= joinArmLines.Count)
+            {
+                var obj = new GameObject("JoinArmLine");
+                obj.transform.SetParent(transform);
+                var lr = obj.AddComponent<LineRenderer>();
+                lr.useWorldSpace = true;
+                lr.startWidth = JoinArmLineWidth;
+                lr.endWidth = JoinArmLineWidth;
+                lr.material = joinArmMat;
+                lr.startColor = joinArmMat.color;
+                lr.endColor = joinArmMat.color;
+                lr.positionCount = 0;
+                lr.numCornerVertices = 4;
+                lr.numCapVertices = 2;
+                joinArmLines.Add(lr);
+            }
+
+            LineRenderer line = joinArmLines[lineIdx];
+            line.positionCount = candidates[i].arcPoints.Length;
+            for (int p = 0; p < candidates[i].arcPoints.Length; p++)
+            {
+                Vector3 pt = candidates[i].arcPoints[p];
+                pt.y += JoinArmYOffset;
+                line.SetPosition(p, pt);
+            }
+            lineIdx++;
+        }
+
+        // Hide unused lines.
+        for (int i = lineIdx; i < joinArmLines.Count; i++)
+        {
+            if (joinArmLines[i] != null)
+                joinArmLines[i].positionCount = 0;
+        }
+    }
+
+    private void HideJoinArmLines()
+    {
+        for (int i = 0; i < joinArmLines.Count; i++)
+        {
+            if (joinArmLines[i] != null)
+                joinArmLines[i].positionCount = 0;
         }
     }
 
@@ -1860,11 +1990,17 @@ public class RailDrawingController : MonoBehaviour
 
             var spline = network.Container.Splines[s];
 
-            // Add actual knot positions.
+            // Add actual knot positions with approximate tangents.
             for (int k = 0; k < spline.Count; k++)
             {
                 Vector3 wp = network.transform.TransformPoint((Vector3)spline[k].Position);
-                splineSamples.Add(new SplineSample { worldPos = wp, splineIndex = s });
+                float kt = (spline.Count > 1) ? (float)k / (spline.Count - 1) : 0f;
+                Vector3 tan = ((Vector3)network.Container.EvaluateTangent(s, kt)).normalized;
+                if (tan.sqrMagnitude < 0.01f) tan = Vector3.forward;
+                splineSamples.Add(new SplineSample
+                {
+                    worldPos = wp, splineIndex = s, tangentDir = tan, t = kt
+                });
             }
 
             // Estimate arc length and sample at ~2 samples per tile for good coverage.
@@ -1877,7 +2013,12 @@ public class RailDrawingController : MonoBehaviour
             {
                 float t = (float)si / sampleCount;
                 Vector3 sp = network.EvaluatePositionWorld(s, t);
-                splineSamples.Add(new SplineSample { worldPos = sp, splineIndex = s });
+                Vector3 tan = ((Vector3)network.Container.EvaluateTangent(s, t)).normalized;
+                if (tan.sqrMagnitude < 0.01f) tan = Vector3.forward;
+                splineSamples.Add(new SplineSample
+                {
+                    worldPos = sp, splineIndex = s, tangentDir = tan, t = t
+                });
             }
         }
     }
@@ -2230,6 +2371,529 @@ public class RailDrawingController : MonoBehaviour
 
         // Remove invalidated candidates.
         candidates.RemoveAll(c => !c.isValid);
+    }
+
+    // ─── Filter Candidates Near Existing Track ──────────────────────────
+
+    /// <summary>
+    /// Removes regular (non-join) candidates whose positions land on or near
+    /// existing finished splines.  Join-arm candidates handle those connections
+    /// instead, so regular dots should not overlap existing track.
+    /// </summary>
+    private void RemoveCandidatesOnExistingTrack()
+    {
+        float tolSq = 0.9f * 0.9f;
+        for (int i = candidates.Count - 1; i >= 0; i--)
+        {
+            if (candidates[i].isJoin) continue; // keep existing joins
+
+            for (int j = 0; j < splineSamples.Count; j++)
+            {
+                Vector3 diff = candidates[i].position - splineSamples[j].worldPos;
+                diff.y = 0f;
+                if (diff.sqrMagnitude < tolSq)
+                {
+                    candidates.RemoveAt(i);
+                    break;
+                }
+            }
+        }
+    }
+
+    // ─── Crossover Prevention (exact Bézier math) ────────────────────────
+
+    /// <summary>
+    /// Extracts cubic Bézier segments (in world-space XZ) for a finished spline.
+    /// Each pair of consecutive knots defines one segment.
+    /// </summary>
+    private List<BezierSegXZ> ExtractSplineBezierSegments(int splineIndex)
+    {
+        var spline = network.Container.Splines[splineIndex];
+        var segs = new List<BezierSegXZ>(spline.Count - 1);
+        var xform = network.transform;
+
+        for (int k = 0; k < spline.Count - 1; k++)
+        {
+            var k0 = spline[k];
+            var k1 = spline[k + 1];
+
+            Vector3 p0w = xform.TransformPoint((Vector3)k0.Position);
+            Vector3 p1w = xform.TransformPoint((Vector3)(k0.Position + k0.TangentOut));
+            Vector3 p2w = xform.TransformPoint((Vector3)(k1.Position + k1.TangentIn));
+            Vector3 p3w = xform.TransformPoint((Vector3)k1.Position);
+
+            var seg = new BezierSegXZ
+            {
+                P0x = p0w.x, P0z = p0w.z,
+                P1x = p1w.x, P1z = p1w.z,
+                P2x = p2w.x, P2z = p2w.z,
+                P3x = p3w.x, P3z = p3w.z
+            };
+
+            // AABB from convex hull of control points.
+            seg.minX = Mathf.Min(Mathf.Min(seg.P0x, seg.P1x), Mathf.Min(seg.P2x, seg.P3x));
+            seg.maxX = Mathf.Max(Mathf.Max(seg.P0x, seg.P1x), Mathf.Max(seg.P2x, seg.P3x));
+            seg.minZ = Mathf.Min(Mathf.Min(seg.P0z, seg.P1z), Mathf.Min(seg.P2z, seg.P3z));
+            seg.maxZ = Mathf.Max(Mathf.Max(seg.P0z, seg.P1z), Mathf.Max(seg.P2z, seg.P3z));
+            segs.Add(seg);
+        }
+        return segs;
+    }
+
+    /// <summary>
+    /// Finds real roots of a₃t³ + a₂t² + a₁t + a₀ = 0 in [0, 1].
+    /// Uses sign-change detection + bisection for robustness.
+    /// Returns count (0–3) and fills roots array.
+    /// </summary>
+    private static int FindCubicRootsIn01(
+        float a3, float a2, float a1, float a0,
+        out float r0, out float r1, out float r2)
+    {
+        r0 = r1 = r2 = 0f;
+
+        // Degenerate: linear.
+        if (Mathf.Abs(a3) < 1e-7f && Mathf.Abs(a2) < 1e-7f)
+        {
+            if (Mathf.Abs(a1) < 1e-7f) return 0;
+            float root = -a0 / a1;
+            if (root >= 0f && root <= 1f) { r0 = root; return 1; }
+            return 0;
+        }
+
+        // Degenerate: quadratic.
+        if (Mathf.Abs(a3) < 1e-7f)
+        {
+            float disc = a1 * a1 - 4f * a2 * a0;
+            if (disc < 0f) return 0;
+            float sqrtD = Mathf.Sqrt(disc);
+            int cnt = 0;
+            float ra = (-a1 + sqrtD) / (2f * a2);
+            float rb = (-a1 - sqrtD) / (2f * a2);
+            if (ra >= 0f && ra <= 1f) { r0 = ra; cnt++; }
+            if (rb >= 0f && rb <= 1f && Mathf.Abs(rb - ra) > 1e-6f)
+            {
+                if (cnt == 0) r0 = rb; else r1 = rb;
+                cnt++;
+            }
+            return cnt;
+        }
+
+        // Full cubic: sample at N points, find sign changes, bisect each.
+        const int N = 20;
+        int count = 0;
+        float prev = ((a3 * 0f + a2) * 0f + a1) * 0f + a0; // f(0)
+
+        for (int i = 1; i <= N; i++)
+        {
+            float t = (float)i / N;
+            float val = ((a3 * t + a2) * t + a1) * t + a0;
+
+            if (prev * val < 0f) // sign change
+            {
+                // Bisect to find the root.
+                float lo = (float)(i - 1) / N;
+                float hi = t;
+                for (int j = 0; j < 24; j++) // 24 iterations ≈ 6e-8 precision
+                {
+                    float mid = (lo + hi) * 0.5f;
+                    float fm = ((a3 * mid + a2) * mid + a1) * mid + a0;
+                    if (fm * prev < 0f) hi = mid;
+                    else { lo = mid; prev = fm; }
+                }
+                float root = (lo + hi) * 0.5f;
+                if (count == 0) r0 = root;
+                else if (count == 1) r1 = root;
+                else r2 = root;
+                count++;
+                if (count >= 3) break;
+            }
+            prev = val;
+        }
+
+        // Also check exact endpoints for zero (within tolerance).
+        float f0 = a0;
+        float f1 = a3 + a2 + a1 + a0;
+        if (Mathf.Abs(f0) < 1e-6f && (count == 0 || Mathf.Abs(r0) > 1e-4f))
+        {
+            if (count == 0) r0 = 0f; else if (count == 1) r1 = 0f; else r2 = 0f;
+            count++;
+        }
+        if (count < 3 && Mathf.Abs(f1) < 1e-6f && (count == 0 || Mathf.Abs(r0 - 1f) > 1e-4f))
+        {
+            if (count == 0) r0 = 1f; else if (count == 1) r1 = 1f; else r2 = 1f;
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Tests whether the line segment A→B (in XZ) crosses the cubic Bézier
+    /// segment described by <paramref name="seg"/>.
+    /// If a crossing is found, outputs the crossing point in XZ.
+    /// </summary>
+    private static bool DoesLineCrossBezierXZ(
+        float ax, float az, float bx, float bz,
+        in BezierSegXZ seg,
+        out float crossX, out float crossZ)
+    {
+        crossX = crossZ = 0f;
+
+        // AABB early-out: expand both boxes slightly and check overlap.
+        float lMinX = Mathf.Min(ax, bx), lMaxX = Mathf.Max(ax, bx);
+        float lMinZ = Mathf.Min(az, bz), lMaxZ = Mathf.Max(az, bz);
+        if (lMaxX < seg.minX - 0.1f || lMinX > seg.maxX + 0.1f) return false;
+        if (lMaxZ < seg.minZ - 0.1f || lMinZ > seg.maxZ + 0.1f) return false;
+
+        // Line normal in XZ: n = (-(bz-az), (bx-ax)).
+        float nx = -(bz - az);
+        float nz = bx - ax;
+
+        // Cubic Bézier coefficients in the standard power basis:
+        //   B(t) = (1-t)³P0 + 3(1-t)²tP1 + 3(1-t)t²P2 + t³P3
+        //        = P0 + 3(P1-P0)t + 3(P0-2P1+P2)t² + (-P0+3P1-3P2+P3)t³
+        // Signed distance from line through A: f(t) = n·(B(t) - A)
+        float d0x = seg.P0x - ax, d0z = seg.P0z - az;
+        float d1x = seg.P1x - seg.P0x, d1z = seg.P1z - seg.P0z;
+        float d2x = seg.P0x - 2f * seg.P1x + seg.P2x, d2z = seg.P0z - 2f * seg.P1z + seg.P2z;
+        float d3x = -seg.P0x + 3f * seg.P1x - 3f * seg.P2x + seg.P3x;
+        float d3z = -seg.P0z + 3f * seg.P1z - 3f * seg.P2z + seg.P3z;
+
+        float c0 = nx * d0x + nz * d0z;
+        float c1 = 3f * (nx * d1x + nz * d1z);
+        float c2 = 3f * (nx * d2x + nz * d2z);
+        float c3 = nx * d3x + nz * d3z;
+
+        int rootCount = FindCubicRootsIn01(c3, c2, c1, c0, out float t0, out float t1, out float t2);
+        if (rootCount == 0) return false;
+
+        // For each root, evaluate B(t) and check it falls on the line segment interior.
+        float abx = bx - ax, abz = bz - az;
+        float abLenSq = abx * abx + abz * abz;
+        if (abLenSq < 1e-10f) return false;
+
+        for (int ri = 0; ri < rootCount; ri++)
+        {
+            float t = ri == 0 ? t0 : (ri == 1 ? t1 : t2);
+            if (t < 0f || t > 1f) continue;
+
+            // Evaluate Bézier at t.
+            float u = 1f - t;
+            float u2 = u * u, t2v = t * t;
+            float u3 = u2 * u, t3 = t2v * t;
+            float bxt = u3 * seg.P0x + 3f * u2 * t * seg.P1x + 3f * u * t2v * seg.P2x + t3 * seg.P3x;
+            float bzt = u3 * seg.P0z + 3f * u2 * t * seg.P1z + 3f * u * t2v * seg.P2z + t3 * seg.P3z;
+
+            // Project B(t) onto line segment A→B: s = dot(B(t)-A, AB) / |AB|²
+            // Inclusive bounds — adjacent arc segments share vertices, so a
+            // crossing at a vertex must be caught by at least one segment.
+            // The safe-radius check in RemoveCrossingCandidates handles
+            // false positives near path start/end.
+            float s = ((bxt - ax) * abx + (bzt - az) * abz) / abLenSq;
+            if (s >= -0.01f && s <= 1.01f)
+            {
+                crossX = bxt;
+                crossZ = bzt;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Removes candidates whose arc path crosses over any existing spline.
+    /// Uses exact line-vs-Bézier intersection (no polyline sampling).
+    /// </summary>
+    private void RemoveCrossingCandidates()
+    {
+        if (network == null) return;
+
+        // Extract Bézier segments for all finished splines.
+        var allSegs = new List<List<BezierSegXZ>>();
+        for (int s = 0; s < network.SplineCount; s++)
+        {
+            if (s == network.ActiveSplineIndex) continue;
+            var spline = network.Container.Splines[s];
+            if (spline.Count < 2) continue;
+            allSegs.Add(ExtractSplineBezierSegments(s));
+        }
+        if (allSegs.Count == 0) return;
+
+        float safeSq = 1.2f * 1.2f;
+
+        for (int ci = candidates.Count - 1; ci >= 0; ci--)
+        {
+            var c = candidates[ci];
+            if (c.arcPoints == null || c.arcPoints.Length < 2) continue;
+
+            Vector3 pathStart = c.arcPoints[0];
+            Vector3 pathEnd = c.arcPoints[c.arcPoints.Length - 1];
+            bool crossed = false;
+
+            for (int pi = 1; pi < c.arcPoints.Length && !crossed; pi++)
+            {
+                float ax = c.arcPoints[pi - 1].x, az = c.arcPoints[pi - 1].z;
+                float bx = c.arcPoints[pi].x, bz = c.arcPoints[pi].z;
+
+                foreach (var segList in allSegs)
+                {
+                    foreach (var seg in segList)
+                    {
+                        if (DoesLineCrossBezierXZ(ax, az, bx, bz, in seg,
+                                out float cx, out float cz))
+                        {
+                            // Ignore crossings near path start (on existing track).
+                            float dsX = cx - pathStart.x, dsZ = cz - pathStart.z;
+                            if (dsX * dsX + dsZ * dsZ < safeSq) continue;
+
+                            // Ignore crossings near path end (join target).
+                            float deX = cx - pathEnd.x, deZ = cz - pathEnd.z;
+                            if (deX * deX + deZ * deZ < safeSq) continue;
+
+                            crossed = true;
+                            break;
+                        }
+                    }
+                    if (crossed) break;
+                }
+            }
+
+            if (crossed)
+                candidates.RemoveAt(ci);
+        }
+    }
+
+    /// <summary>
+    /// Removes non-join candidates whose position is within 8 tiles of any
+    /// existing spline.  Ensures at least 7 tiles of clearance between
+    /// independent rail lines.  Join candidates are exempt (they connect to
+    /// existing track by design).
+    /// </summary>
+    private void RemoveProximityCandidates()
+    {
+        if (splineSamples.Count == 0) return;
+
+        float minDistSq = 8f * 8f;
+
+        for (int ci = candidates.Count - 1; ci >= 0; ci--)
+        {
+            var c = candidates[ci];
+            if (c.isJoin) continue;
+
+            for (int si = 0; si < splineSamples.Count; si++)
+            {
+                Vector3 diff = c.position - splineSamples[si].worldPos;
+                diff.y = 0f;
+                if (diff.sqrMagnitude < minDistSq)
+                {
+                    candidates.RemoveAt(ci);
+                    break;
+                }
+            }
+        }
+    }
+
+    // ─── Join Arm Candidates ────────────────────────────────────────────
+
+    /// <summary>
+    /// Generates join-arm candidates: smooth Bézier curves from the drawing's
+    /// last knot to nearby existing track.  Each arm exits existing track
+    /// <b>tangentially</b> (like a real junction switch) and curves to meet the
+    /// drawing's endpoint heading in the drawing direction.
+    /// </summary>
+    private void BuildJoinArmCandidates(Vector3 lastKnot, Vector3 forward, Vector3 cursorWorldPos)
+    {
+        if (forward.sqrMagnitude < 0.5f) return;
+
+        float viewR = RailConstants.CandidateViewRadius + 3; // slightly wider than normal candidates
+        float viewRSq = viewR * viewR;
+        float joinDedupSq = 0.9f * 0.9f; // one join arm per tile center
+
+        // Track positions of accepted join arms for dedup (not against regular candidates).
+        var joinPositions = new List<Vector3>();
+
+        // Iterate spline samples (includes knot positions near nodes + mid-spline points).
+        for (int i = 0; i < splineSamples.Count; i++)
+        {
+            var sample = splineSamples[i];
+
+            // Show arms near the CURSOR, not near the drawing endpoint.
+            Vector3 toCursor = sample.worldPos - cursorWorldPos;
+            toCursor.y = 0f;
+            if (toCursor.sqrMagnitude > viewRSq) continue;
+
+            // Snap to tile grid so join dots align with regular candidates.
+            Vector3 armPos = SnapPosToTileCenter(sample.worldPos);
+            armPos.y = lastKnot.y;
+
+            // Still need minimum distance from the drawing endpoint.
+            Vector3 diff = armPos - lastKnot;
+            diff.y = 0f;
+            if (diff.sqrMagnitude < 1f) continue;
+
+            // Don't loop back to drawing start on short tracks.
+            if (Vector3.Distance(armPos, drawingStartPos) < 1.1f && knotCount < 4)
+                continue;
+
+            // Check for a graph node at this sample position.
+            RailNode nodeAtSample = railGraph?.FindNodeAtPosition(armPos, 0.6f);
+            if (nodeAtSample != null && !nodeAtSample.CanAddConnection) continue;
+            if (nodeAtSample != null && !nodeAtSample.IsJunction && IsNearExistingJunction(nodeAtSample, 7f))
+                continue;
+
+            // Dedup against other join arms only (not regular candidates).
+            bool tooClose = false;
+            for (int jp = 0; jp < joinPositions.Count; jp++)
+            {
+                Vector3 d = armPos - joinPositions[jp];
+                d.y = 0f;
+                if (d.sqrMagnitude < joinDedupSq) { tooClose = true; break; }
+            }
+            if (tooClose) continue;
+
+            // Try both ±tangent directions along the existing track; keep the best.
+            SnapResult? bestArm = null;
+            float bestAlignment = -2f;
+            for (int dir = 0; dir < 2; dir++)
+            {
+                Vector3 armExitDir = (dir == 0) ? sample.tangentDir : -sample.tangentDir;
+                SnapResult? arm = TryBuildJoinArmArc(lastKnot, forward, armPos, armExitDir, minTurnRadius);
+                if (!arm.HasValue) continue;
+                if (IsPathOverlappingExistingSpline(arm.Value)) continue;
+
+                float al = Vector3.Dot(arm.Value.tangentOut.normalized, forward);
+                if (al > bestAlignment) { bestAlignment = al; bestArm = arm; }
+            }
+
+            if (bestArm == null) continue;
+
+            joinPositions.Add(armPos);
+
+            SnapResult result = bestArm.Value;
+            result.isJoin = true;
+            if (nodeAtSample != null)
+            {
+                result.joinNode = nodeAtSample;
+                result.position = nodeAtSample.worldPosition;
+                candidates.Add(result);
+                AddParallelCompletionCandidates(lastKnot, forward, nodeAtSample);
+            }
+            else
+            {
+                result.isMidSplineJoin = true;
+                result.joinSplineIndex = sample.splineIndex;
+                candidates.Add(result);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds a cubic-Bézier join arm from <paramref name="lastKnot"/> to
+    /// <paramref name="armOrigin"/> (a point on existing track).
+    /// <list type="bullet">
+    ///   <item>At <c>lastKnot</c>: the curve departs in <paramref name="drawingDir"/> (continues the drawing).</item>
+    ///   <item>At <c>armOrigin</c>: the curve arrives tangent to <paramref name="armExitDir"/> (smooth junction).</item>
+    /// </list>
+    /// Returns null when the geometry is invalid (behind the drawing, too tight, etc.).
+    /// </summary>
+    private SnapResult? TryBuildJoinArmArc(
+        Vector3 lastKnot, Vector3 drawingDir,
+        Vector3 armOrigin, Vector3 armExitDir, float minR)
+    {
+        Vector3 toArm = armOrigin - lastKnot;
+        toArm.y = 0f;
+        float dist = toArm.magnitude;
+        if (dist < RailConstants.MinSegmentLength) return null;
+
+        // Arm origin must be in the forward hemisphere of the drawing.
+        if (Vector3.Dot(toArm.normalized, drawingDir) < 0f) return null;
+
+        // armExitDir should generally face toward lastKnot so the arm
+        // exits the track on the correct side.
+        float armDot = Vector3.Dot((lastKnot - armOrigin).normalized, armExitDir);
+        if (armDot < -0.2f) return null;
+
+        int group = ComputeCardinalGroup(drawingDir);
+        float D = dist / 3f;
+
+        // Bézier tangent at lastKnot: continue the drawing direction.
+        Vector3 tOut = drawingDir * D;
+
+        // Bézier tangent at armOrigin: arrive tangent to existing track.
+        Vector3 tIn = armExitDir * D;
+
+        // exitDirection convention: in FinishSpline, endExit = -exitDirection.
+        Vector3 exitDir = -armExitDir;
+
+        // Sample the cubic Bézier for preview.
+        Vector3 P0 = lastKnot;
+        Vector3 P1 = P0 + tOut;
+        Vector3 P2 = armOrigin + tIn;
+        Vector3 P3 = armOrigin;
+
+        int sampleCount = Mathf.Max(12, Mathf.CeilToInt(dist) * 3);
+        var points = new Vector3[sampleCount];
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float t = (float)i / (sampleCount - 1);
+            float u = 1f - t;
+            points[i] = u * u * u * P0 + 3f * u * u * t * P1 + 3f * u * t * t * P2 + t * t * t * P3;
+            points[i].y = lastKnot.y;
+        }
+        points[0] = lastKnot;
+        points[sampleCount - 1] = armOrigin;
+
+        // ── Turn-radius check: compute minimum radius of curvature ──
+        // Walk the sampled polyline and measure the radius at each interior
+        // point via the circumradius of three consecutive samples.
+        for (int i = 1; i < sampleCount - 1; i++)
+        {
+            Vector3 a = points[i - 1]; a.y = 0f;
+            Vector3 b = points[i];     b.y = 0f;
+            Vector3 c = points[i + 1]; c.y = 0f;
+            Vector3 ab = b - a;
+            Vector3 bc = c - b;
+            float cross = Mathf.Abs(ab.x * bc.z - ab.z * bc.x);
+            if (cross < 1e-6f) continue; // nearly straight segment
+            float abLen = ab.magnitude;
+            float bcLen = bc.magnitude;
+            float acLen = (c - a).magnitude;
+            float radius = (abLen * bcLen * acLen) / (2f * cross);
+            if (radius < minR) return null;
+        }
+
+        // Reject curves that fold back on themselves (excessive length).
+        float curveLen = 0f;
+        for (int i = 1; i < sampleCount; i++)
+            curveLen += Vector3.Distance(points[i - 1], points[i]);
+        if (curveLen > dist * 3f) return null;
+
+        return new SnapResult
+        {
+            position = armOrigin,
+            exitDirection = exitDir,
+            tangentOut = tOut,
+            tangentIn = tIn,
+            arcPoints = points,
+            isValid = true,
+            cardinalGroup = group
+        };
+    }
+
+    /// <summary>
+    /// Returns true if any existing candidate is within <paramref name="tolerance"/>
+    /// of the given position (XZ distance).
+    /// </summary>
+    private bool IsDuplicatePosition(Vector3 pos, float tolerance)
+    {
+        float tolSq = tolerance * tolerance;
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            Vector3 d = candidates[i].position - pos;
+            d.y = 0f;
+            if (d.sqrMagnitude < tolSq) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -2596,9 +3260,23 @@ public class RailDrawingController : MonoBehaviour
             BuildCandidates(lastKnotOpt.Value, lastDirection, cursorWorldPos);
         }
         BuildSplineSamples();
-        TagJoinCandidates(lastKnotOpt.Value, lastDirection);
+        RemoveCandidatesOnExistingTrack();
+
+        // Generate join-arm candidates (arcs from lastKnot to existing track).
+        if (knotCount == 1)
+        {
+            foreach (Vector3 cardinal in RailConstants.Cardinals)
+                BuildJoinArmCandidates(lastKnotOpt.Value, cardinal, cursorWorldPos);
+        }
+        else
+        {
+            BuildJoinArmCandidates(lastKnotOpt.Value, lastDirection, cursorWorldPos);
+        }
+
         TagParallelReturnCandidate(lastKnotOpt.Value, lastDirection);
         TagJunctionMirrorCandidates();
+        RemoveCrossingCandidates();
+        RemoveProximityCandidates();
 
         // Find closest candidate to cursor (XZ distance).
         float bestDistSq = float.MaxValue;
@@ -2670,6 +3348,9 @@ public class RailDrawingController : MonoBehaviour
                 markerPool[i].SetActive(false);
             }
         }
+
+        // Show arc lines for all join-arm candidates.
+        ShowJoinArmLines();
 
         // Show preview line for selected candidate.
         if (selectedCandidate >= 0)
@@ -2764,6 +3445,7 @@ public class RailDrawingController : MonoBehaviour
             markerPool[i].SetActive(false);
         selectedCandidate = -1;
         HideSwitchPathLines();
+        HideJoinArmLines();
     }
 
     // ─── Finish ──────────────────────────────────────────────────────────
