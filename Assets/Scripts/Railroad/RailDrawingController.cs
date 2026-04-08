@@ -2285,6 +2285,32 @@ public class RailDrawingController : MonoBehaviour
             float absArc = Mathf.Abs(arcSweep);
             if (absArc < 0.03f || absArc > maxArcRad) continue;
 
+            // Snap to exact 90° when close: adjust position, direction, and handles
+            // so that 4 consecutive 90° curves form a perfect closed circle.
+            float arcDeg = absArc * Mathf.Rad2Deg;
+            bool snappedTo90 = false;
+            if (Mathf.Abs(arcDeg - 90f) < 3f)
+            {
+                // Compute the exact 90° endpoint on this turning circle.
+                float exactSweep = sign > 0f ? Mathf.PI * 0.5f : -Mathf.PI * 0.5f;
+                float exactAngle = angleCS + exactSweep;
+                Vector3 exactPos = center + new Vector3(Mathf.Sin(exactAngle), 0f, Mathf.Cos(exactAngle)) * R;
+                exactPos.y = lastKnot.y;
+                Vector3 snappedExact = SnapPosToTileCenter(exactPos);
+                snappedExact.y = lastKnot.y;
+
+                // Only snap if the corrected tile center is close to the original.
+                Vector3 posDelta = snappedExact - tilePos; posDelta.y = 0f;
+                if (posDelta.sqrMagnitude < 0.8f * 0.8f)
+                {
+                    tilePos = snappedExact;
+                    arcDeg = 90f;
+                    absArc = Mathf.PI * 0.5f;
+                    arcSweep = exactSweep;
+                    snappedTo90 = true;
+                }
+            }
+
             // Duplicate check.
             bool duplicate = false;
             for (int ci = 0; ci < candidates.Count; ci++)
@@ -2295,7 +2321,7 @@ public class RailDrawingController : MonoBehaviour
             if (duplicate) continue;
 
             // Exit direction: forward rotated by the arc sweep.
-            float arcDeg = absArc * Mathf.Rad2Deg;
+            if (!snappedTo90) arcDeg = absArc * Mathf.Rad2Deg;
             Quaternion exitRot = Quaternion.AngleAxis(sign * arcDeg, Vector3.up);
             Vector3 exitDir = (exitRot * forward).normalized;
 
@@ -2770,13 +2796,51 @@ public class RailDrawingController : MonoBehaviour
             var sample = splineSamples[i];
 
             // Show arms near the CURSOR, not near the drawing endpoint.
-            Vector3 toCursor = sample.worldPos - cursorWorldPos;
-            toCursor.y = 0f;
-            if (toCursor.sqrMagnitude > viewRSq) continue;
+            // Loop-close samples (splineIndex < 0) are always visible.
+            if (sample.splineIndex >= 0)
+            {
+                Vector3 toCursor = sample.worldPos - cursorWorldPos;
+                toCursor.y = 0f;
+                if (toCursor.sqrMagnitude > viewRSq) continue;
+            }
 
             // Snap to tile grid so join dots align with regular candidates.
             Vector3 armPos = SnapPosToTileCenter(sample.worldPos);
             armPos.y = lastKnot.y;
+
+            // For synthetic loop-back samples, use the exact drawing start
+            // (not snap) and build a circular arc instead of a bezier arm.
+            if (sample.splineIndex < 0)
+            {
+                armPos = drawingStartPos;
+                armPos.y = lastKnot.y;
+
+                Vector3 loopDiff = armPos - lastKnot;
+                loopDiff.y = 0f;
+                if (loopDiff.sqrMagnitude < 1f)
+                {
+                    Debug.Log("[LoopClose] Rejected: too close to lastKnot");
+                    continue;
+                }
+
+                SnapResult? loopArc = TryBuildLoopCloseArc(lastKnot, forward, armPos);
+                if (!loopArc.HasValue)
+                {
+                    Debug.Log($"[LoopClose] TryBuildLoopCloseArc returned null. lastKnot={lastKnot}, forward={forward}, target={armPos}");
+                    continue;
+                }
+
+                Debug.Log($"[LoopClose] Arc built successfully! Adding candidate at {drawingStartPos}");
+                joinPositions.Add(armPos);
+                SnapResult lr = loopArc.Value;
+                lr.isJoin = true;
+                lr.isMidSplineJoin = false;
+                lr.position = drawingStartPos;
+                RailNode startNode = railGraph?.FindNodeAtPosition(drawingStartPos, 0.6f);
+                if (startNode != null) lr.joinNode = startNode;
+                candidates.Add(lr);
+                continue;
+            }
 
             // Still need minimum distance from the drawing endpoint.
             Vector3 diff = armPos - lastKnot;
@@ -2829,6 +2893,15 @@ public class RailDrawingController : MonoBehaviour
                 result.position = nodeAtSample.worldPosition;
                 candidates.Add(result);
                 AddParallelCompletionCandidates(lastKnot, forward, nodeAtSample);
+            }
+            else if (sample.splineIndex < 0)
+            {
+                // Synthetic loop-back sample (drawing start node, not yet in graph).
+                // Tag as a simple join; FinishSpline will create/merge the node.
+                result.isJoin = true;
+                result.isMidSplineJoin = false;
+                result.position = sample.worldPos;
+                candidates.Add(result);
             }
             else
             {
@@ -2929,6 +3002,79 @@ public class RailDrawingController : MonoBehaviour
             arcPoints = points,
             isValid = true,
             cardinalGroup = group
+        };
+    }
+
+    /// <summary>
+    /// Builds a cubic-Bézier loop-closing candidate from lastKnot (heading forward)
+    /// to the drawing start position.  We know the entry tangent (forward) and exit
+    /// tangent (drawingStartExitDir), so we build a direct bezier instead of
+    /// trying to fit a circular arc (which can fail due to tile-snapping drift).
+    /// </summary>
+    private SnapResult? TryBuildLoopCloseArc(Vector3 lastKnot, Vector3 forward, Vector3 target)
+    {
+        Vector3 toTarget = target - lastKnot;
+        toTarget.y = 0f;
+        float dist = toTarget.magnitude;
+        if (dist < RailConstants.MinSegmentLength) return null;
+
+        // We know the tangent at the start node: drawingStartExitDir points AWAY
+        // from the start along the existing track. The closing arc arrives from the
+        // opposite direction, so the bezier approach tangent = -drawingStartExitDir.
+        Vector3 arrivalDir = -drawingStartExitDir;
+        if (arrivalDir.sqrMagnitude < 0.01f) return null;
+
+        int group = ComputeCardinalGroup(forward);
+        float D = dist / 3f;
+
+        Vector3 tOut = forward * D;
+        Vector3 tIn = arrivalDir * D;
+        Vector3 exitDir = drawingStartExitDir; // track continues in start exit direction
+
+        // Sample cubic bezier for preview.
+        Vector3 P0 = lastKnot;
+        Vector3 P1 = P0 + tOut;
+        Vector3 P2 = target + tIn;
+        Vector3 P3 = target;
+
+        int sampleCount = Mathf.Max(12, Mathf.CeilToInt(dist) * 3);
+        var points = new Vector3[sampleCount];
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float t = (float)i / (sampleCount - 1);
+            float u = 1f - t;
+            points[i] = u * u * u * P0 + 3f * u * u * t * P1 + 3f * u * t * t * P2 + t * t * t * P3;
+            points[i].y = lastKnot.y;
+        }
+        points[0] = lastKnot;
+        points[sampleCount - 1] = target;
+
+        // Minimum radius-of-curvature check (circumradius of 3 consecutive samples).
+        for (int i = 1; i < sampleCount - 1; i++)
+        {
+            Vector3 a = points[i - 1]; a.y = 0f;
+            Vector3 b = points[i];     b.y = 0f;
+            Vector3 c = points[i + 1]; c.y = 0f;
+            Vector3 ab = b - a;
+            Vector3 bc = c - b;
+            float cross = Mathf.Abs(ab.x * bc.z - ab.z * bc.x);
+            if (cross < 1e-6f) continue;
+            float abLen = ab.magnitude;
+            float bcLen = bc.magnitude;
+            float acLen = (c - a).magnitude;
+            float radius = (abLen * bcLen * acLen) / (2f * cross);
+            if (radius < minTurnRadius * 0.8f) return null; // slightly relaxed for loop close
+        }
+
+        return new SnapResult
+        {
+            position      = target,
+            exitDirection  = exitDir,
+            tangentOut     = tOut,
+            tangentIn      = tIn,
+            arcPoints      = points,
+            isValid        = true,
+            cardinalGroup  = group
         };
     }
 
@@ -3314,6 +3460,43 @@ public class RailDrawingController : MonoBehaviour
         BuildSplineSamples();
         RemoveCandidatesOnExistingTrack();
 
+        // Inject the drawing start node as a synthetic spline sample so
+        // BuildJoinArmCandidates can generate a loop-closing arc back to it.
+        if (knotCount >= 4 && drawingStartExitDir.sqrMagnitude > 0.01f)
+        {
+            RailNode startNode = railGraph?.FindNodeAtPosition(drawingStartPos, 0.6f);
+            if (startNode == null || startNode.CanAddConnection)
+            {
+                splineSamples.Add(new SplineSample
+                {
+                    worldPos = drawingStartPos,
+                    splineIndex = -1,  // not a real spline index
+                    tangentDir = drawingStartExitDir,
+                    t = 0f
+                });
+
+                // Tag any regular curve candidate that lands near the drawing
+                // start as a loop-closing join so it survives proximity culling.
+                float loopTolSq = 1.5f * 1.5f;
+                for (int ci = 0; ci < candidates.Count; ci++)
+                {
+                    if (candidates[ci].isJoin) continue;
+                    Vector3 diff = candidates[ci].position - drawingStartPos;
+                    diff.y = 0f;
+                    if (diff.sqrMagnitude < loopTolSq)
+                    {
+                        SnapResult lc = candidates[ci];
+                        lc.isJoin = true;
+                        lc.isMidSplineJoin = false;
+                        lc.position = drawingStartPos; // snap to exact start
+                        if (startNode != null)
+                            lc.joinNode = startNode;
+                        candidates[ci] = lc;
+                    }
+                }
+            }
+        }
+
         // Generate join-arm candidates (arcs from lastKnot to existing track).
         if (knotCount == 1)
         {
@@ -3327,8 +3510,26 @@ public class RailDrawingController : MonoBehaviour
 
         TagParallelReturnCandidate(lastKnotOpt.Value, lastDirection);
         TagJunctionMirrorCandidates();
+
+        // Count loop-close candidates before filtering.
+        int loopCountBefore = 0;
+        for (int i = 0; i < candidates.Count; i++)
+            if (candidates[i].isJoin && Vector3.Distance(candidates[i].position, drawingStartPos) < 0.5f)
+                loopCountBefore++;
+
         RemoveCrossingCandidates();
         RemoveProximityCandidates();
+
+        // Check if loop-close candidates survived filtering.
+        if (loopCountBefore > 0)
+        {
+            int loopCountAfter = 0;
+            for (int i = 0; i < candidates.Count; i++)
+                if (candidates[i].isJoin && Vector3.Distance(candidates[i].position, drawingStartPos) < 0.5f)
+                    loopCountAfter++;
+            if (loopCountAfter < loopCountBefore)
+                Debug.Log($"[LoopClose] WARNING: {loopCountBefore - loopCountAfter} loop-close candidate(s) removed by crossing/proximity filter!");
+        }
 
         // Find closest candidate to cursor (XZ distance).
         float bestDistSq = float.MaxValue;

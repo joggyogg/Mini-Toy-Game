@@ -23,11 +23,13 @@ public class JunctionGateUI : MonoBehaviour
     private const int Size = 256;
 
     // All radii are in 0..0.5 space (0.5 = half-texture from centre).
-    private const float WheelRadius  = 0.38f;
-    private const float InnerRadius  = 0.14f;
-    private const float CenterRadius = 0.06f;
-    private const float PipRadius    = 0.040f;  // slightly smaller so 3 pips fit cleanly
-    private const float GroupGap     = 0.07f;  // radians blanked at each group boundary
+    private const float WheelRadius    = 0.46f;
+    private const float BorderWidth    = 0.025f;
+    private const float ArcOuterR      = WheelRadius - BorderWidth;
+    private const float ArcInnerR      = 0.22f;
+    private const float GroupGapHalfDeg = 3f;    // half-gap at each group boundary (degrees)
+    private const float PipGapDeg      = 2.5f;   // gap between pips within a group (degrees)
+    private const float PaleBlend      = 0.68f;   // blend toward white for inactive pips
 
     private static readonly Color[] GroupColors =
     {
@@ -37,12 +39,7 @@ public class JunctionGateUI : MonoBehaviour
         new Color(0.95f, 0.30f, 0.10f, 1f),  // 3 Orange/Red
     };
 
-    private static readonly Color ColInactiveArc = new Color(0.82f, 0.82f, 0.80f, 1f);
-    private static readonly Color ColEmptyGroup  = new Color(0.70f, 0.70f, 0.70f, 0.6f);
-    private static readonly Color ColGap         = new Color(0.93f, 0.93f, 0.91f, 1f);
-    private static readonly Color ColBackground  = new Color(0.96f, 0.96f, 0.94f, 1f);
-    private static readonly Color ColCenter      = new Color(0.30f, 0.30f, 0.30f, 1f);
-    private static readonly Color ColInactivePip = new Color(0.55f, 0.55f, 0.55f, 1f);
+    private static readonly Color ColCenter = new Color(0.30f, 0.30f, 0.30f, 1f);
 
     public void Initialize(RailNode railNode)
     {
@@ -137,7 +134,6 @@ public class JunctionGateUI : MonoBehaviour
     private void Paint(float orientRad)
     {
         // Compute actual screen-space angle for each group center direction.
-        // This ensures the pizza slices match the pip positions exactly.
         float[] groupScreenAngles = new float[4];
         for (int g = 0; g < 4; g++)
         {
@@ -154,16 +150,25 @@ public class JunctionGateUI : MonoBehaviour
             int next = (g + 1) % 4;
             float a = groupScreenAngles[g];
             float b = groupScreenAngles[next];
-            // Use angular midpoint (handles wrap-around).
             float delta = Mathf.DeltaAngle(a * Mathf.Rad2Deg, b * Mathf.Rad2Deg) * Mathf.Deg2Rad;
             boundaryAngles[g] = a + delta * 0.5f;
         }
 
-        // Pass 1 – per-pixel arc colouring
+        // Pre-compute exit counts and active indices per group.
+        int[] exitCounts = new int[4];
+        int[] activeIndices = new int[4];
+        for (int g = 0; g < 4; g++)
+        {
+            var exits = _node.GetGroupExits(g);
+            exitCounts[g] = exits != null ? exits.Count : 0;
+            activeIndices[g] = exitCounts[g] > 0 ? _node.gateIndices[g] % exitCounts[g] : 0;
+        }
+
+        // Single pass – per-pixel arc-segment colouring.
         for (int y = 0; y < Size; y++)
         for (int x = 0; x < Size; x++)
         {
-            float fx   = (x + 0.5f) / Size - 0.5f;  // [-0.5 .. 0.5]
+            float fx   = (x + 0.5f) / Size - 0.5f;
             float fy   = (y + 0.5f) / Size - 0.5f;
             float dist = Mathf.Sqrt(fx * fx + fy * fy);
 
@@ -171,104 +176,85 @@ public class JunctionGateUI : MonoBehaviour
 
             if (dist <= WheelRadius)
             {
-                c = ColBackground;
+                c = Color.white; // white for border ring, center, and gaps
 
-                if (dist >= InnerRadius)
+                if (dist >= ArcInnerR && dist <= ArcOuterR)
                 {
-                    // Negate fy to compensate for the vertical mirror applied after painting,
-                    // so the wedge angles match the pip placement angles exactly.
                     float pixelAngle = Mathf.Atan2(-fy, fx);
+                    float pixelDeg = pixelAngle * Mathf.Rad2Deg;
 
-                    // Find which group this pixel belongs to by checking angular
-                    // distance to each group's screen-space center.
+                    // Find nearest group.
                     int bestGroup = 0;
                     float bestDelta = float.MaxValue;
                     for (int g = 0; g < 4; g++)
                     {
                         float d = Mathf.Abs(Mathf.DeltaAngle(
-                            pixelAngle * Mathf.Rad2Deg,
-                            groupScreenAngles[g] * Mathf.Rad2Deg));
+                            pixelDeg, groupScreenAngles[g] * Mathf.Rad2Deg));
                         if (d < bestDelta) { bestDelta = d; bestGroup = g; }
                     }
 
-                    // Check if we're near a boundary (gap).
+                    // Check boundary gaps.
                     bool inGap = false;
-                    float gapHalfDeg = GroupGap * 0.5f * Mathf.Rad2Deg;
                     for (int g = 0; g < 4; g++)
                     {
-                        float distToBoundary = Mathf.Abs(Mathf.DeltaAngle(
-                            pixelAngle * Mathf.Rad2Deg,
-                            boundaryAngles[g] * Mathf.Rad2Deg));
-                        if (distToBoundary < gapHalfDeg) { inGap = true; break; }
+                        float distToBound = Mathf.Abs(Mathf.DeltaAngle(
+                            pixelDeg, boundaryAngles[g] * Mathf.Rad2Deg));
+                        if (distToBound < GroupGapHalfDeg) { inGap = true; break; }
                     }
 
-                    if (inGap)
+                    if (!inGap && exitCounts[bestGroup] > 0)
                     {
-                        c = ColGap;
+                        int N = exitCounts[bestGroup];
+                        float centerDeg = groupScreenAngles[bestGroup] * Mathf.Rad2Deg;
+
+                        // Compute available half-span from center to boundary.
+                        float halfSpanDeg = Mathf.Abs(Mathf.DeltaAngle(
+                            centerDeg, boundaryAngles[bestGroup] * Mathf.Rad2Deg));
+                        float availHalfDeg = halfSpanDeg - GroupGapHalfDeg;
+
+                        // Signed delta from group center.
+                        float deltaDeg = Mathf.DeltaAngle(centerDeg, pixelDeg);
+
+                        if (Mathf.Abs(deltaDeg) <= availHalfDeg)
+                        {
+                            // Distribute N pips symmetrically around center.
+                            float totalSpanDeg = availHalfDeg * 2f;
+                            float totalGapsDeg = (N - 1) * PipGapDeg;
+                            float pipWidthDeg = (totalSpanDeg - totalGapsDeg) / N;
+                            float localPos = deltaDeg + availHalfDeg; // 0..totalSpanDeg
+
+                            float accum = 0f;
+                            int pipIdx = -1;
+                            for (int p = 0; p < N; p++)
+                            {
+                                if (localPos >= accum && localPos < accum + pipWidthDeg)
+                                {
+                                    pipIdx = p;
+                                    break;
+                                }
+                                accum += pipWidthDeg + PipGapDeg;
+                            }
+
+                            if (pipIdx >= 0)
+                            {
+                                Color vivid = GroupColors[bestGroup];
+                                c = ((N - 1 - pipIdx) == activeIndices[bestGroup])
+                                    ? vivid
+                                    : Color.Lerp(vivid, Color.white, PaleBlend);
+                            }
+                            // else in pip gap → stays white
+                        }
                     }
-                    else
-                    {
-                        c = _node.GetGroupExitCount(bestGroup) == 0 ? ColEmptyGroup : ColInactiveArc;
-                    }
+                    // else no exits or in boundary gap → stays white
                 }
             }
 
             _pixels[y * Size + x] = c;
         }
 
-        // Pass 2 – pip dots at 3 fixed positions per group (left / center / right).
-        //          Positions are at fixed angular offsets from the group center in
-        //          world space, so they never drift regardless of exit angle.
-        //          Exit rank from GetGroupExits (sorted by angle) maps to position:
-        //            1 exit  → center
-        //            2 exits → left, right
-        //            3 exits → left, center, right
-        float midR = (InnerRadius + WheelRadius) * 0.5f;
-        const float pipOffsetDeg = 30f; // degrees from group center for left/right pips
-
-        for (int g = 0; g < RailNode.NumDirectionGroups; g++)
-        {
-            var exits = _node.GetGroupExits(g);
-            int count = exits != null ? exits.Count : 0;
-            if (count == 0) continue;
-
-            int activeIdx = _node.gateIndices[g] % count;
-
-            // Fixed world-space directions for the 3 pip positions.
-            float centerDeg = _node.GroupCenterAngle(g);
-            float leftRad  = (centerDeg - pipOffsetDeg) * Mathf.Deg2Rad;
-            float centerRad = centerDeg * Mathf.Deg2Rad;
-            float rightRad = (centerDeg + pipOffsetDeg) * Mathf.Deg2Rad;
-
-            Vector3 leftDir  = new Vector3(Mathf.Sin(leftRad),  0f, Mathf.Cos(leftRad));
-            Vector3 centerDir = new Vector3(Mathf.Sin(centerRad), 0f, Mathf.Cos(centerRad));
-            Vector3 rightDir = new Vector3(Mathf.Sin(rightRad), 0f, Mathf.Cos(rightRad));
-
-            // Map exits to positions by count.
-            Vector3[] pipDirs;
-            if (count == 1)
-                pipDirs = new[] { centerDir };
-            else if (count == 2)
-                pipDirs = new[] { leftDir, rightDir };
-            else
-                pipDirs = new[] { leftDir, centerDir, rightDir };
-
-            for (int p = 0; p < count; p++)
-            {
-                float screenAngle = ComputeScreenAngleForDirection(pipDirs[p]);
-                float cx = 0.5f + Mathf.Cos(screenAngle) * midR;
-                float cy = 0.5f - Mathf.Sin(screenAngle) * midR;
-                Color col = (p == activeIdx) ? GroupColors[g] : ColInactivePip;
-                FillCircle(cx, cy, PipRadius, col);
-            }
-        }
-
-        // Pass 3 – centre dot
-        FillCircle(0.5f, 0.5f, CenterRadius, ColCenter);
-
-        // Pass 4 – junction ID number in the center
+        // Junction ID number in the center.
         if (_node.junctionId >= 0)
-            DrawNumber(_node.junctionId, Size / 2, Size / 2, 2, Color.white);
+            DrawNumber(_node.junctionId, Size / 2, Size / 2, 2, ColCenter);
 
         // Mirror vertically — swap rows so the texture reads correctly
         // when the canvas faces the camera.
