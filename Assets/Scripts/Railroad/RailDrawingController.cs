@@ -747,6 +747,13 @@ public class RailDrawingController : MonoBehaviour
                 Vector3 snapped = SnapPosToTileCenter(rawPos);
                 snapped.y = rawPos.y;
 
+                // Only keep tiles whose centre is very close to the actual
+                // spline curve.  On curves the grid-snapped position drifts
+                // off-centre; reject those to avoid jagged dots.
+                Vector3 offCentre = snapped - rawPos;
+                offCentre.y = 0f;
+                if (offCentre.sqrMagnitude > 0.10f * 0.10f) continue;
+
                 // Skip if too close to an existing knot ref (they take priority).
                 bool nearKnot = false;
                 for (int r = 0; r < selectRefs.Count; r++)
@@ -3490,15 +3497,20 @@ public class RailDrawingController : MonoBehaviour
                 endNode = railGraph.GetOrCreateNode(endPos.Value);
             }
 
-            // Exit direction at start node points along the track away from the node.
-            Vector3 startExit = drawingStartExitDir;
-            // Exit direction at end node points backward (away from the node along the track).
-            Vector3 endExit = -drawingEndExitDir;
+            // Read exit directions directly from the finished spline's actual
+            // tangent at each endpoint.  This is always correct regardless of
+            // which code path was used to build the drawing (PlaceFirstKnot,
+            // TrySelectEndpoint, PlaceSecondKnot, PlaceConstrainedKnot, etc.).
+            // Tangent at t=0 points forward (away from start node) = start exit.
+            // Tangent at t=1 points forward (toward end node) → negate for end exit.
+            Vector3 startExit = ((Vector3)network.Container.EvaluateTangent(splineIdx, 0f)).normalized;
+            Vector3 endExit   = -((Vector3)network.Container.EvaluateTangent(splineIdx, 1f)).normalized;
 
-            // Recompute both group hints from the actual exit directions to
-            // ensure they are consistent.  The drawing-system's cardinalGroup
-            // reflects the forward direction which matches startExit, but
-            // endExit points the opposite way and needs recomputation.
+            // Fallback to tracked variables if tangent evaluation returns zero
+            // (degenerate spline).
+            if (startExit.sqrMagnitude < 0.01f) startExit = drawingStartExitDir;
+            if (endExit.sqrMagnitude < 0.01f)   endExit   = -drawingEndExitDir;
+
             drawingStartGroupHint = ComputeCardinalGroup(startExit);
             drawingEndGroupHint   = ComputeCardinalGroup(endExit);
 

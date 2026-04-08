@@ -419,71 +419,121 @@ public class RailGraph : MonoBehaviour
         var spline = container.Splines[splineIndex];
         var xform = network.transform;
 
-        // Find which span (pair of adjacent knots) the position falls between.
+        // ── Find which span the position falls in and the parametric t ──
+        // Sample each span's cubic Bézier to find the closest point.
         float bestDist = float.MaxValue;
-        int insertAfter = 0;
+        int bestSpan = 0;
+        float bestT = 0.5f;
 
         for (int k = 0; k < spline.Count - 1; k++)
         {
-            Vector3 kStart = xform.TransformPoint((Vector3)spline[k].Position);
-            Vector3 kEnd = xform.TransformPoint((Vector3)spline[k + 1].Position);
+            // Extract the 4 control points in world space.
+            float3 lp0 = spline[k].Position;
+            float3 lp1 = spline[k].Position + spline[k].TangentOut;
+            float3 lp2 = spline[k + 1].Position + spline[k + 1].TangentIn;
+            float3 lp3 = spline[k + 1].Position;
 
-            Vector3 segDir = kEnd - kStart;
-            float segLen = segDir.magnitude;
-            if (segLen < 0.01f) continue;
-            segDir /= segLen;
+            Vector3 wp0 = xform.TransformPoint((Vector3)lp0);
+            Vector3 wp1 = xform.TransformPoint((Vector3)lp1);
+            Vector3 wp2 = xform.TransformPoint((Vector3)lp2);
+            Vector3 wp3 = xform.TransformPoint((Vector3)lp3);
 
-            float proj = Vector3.Dot(worldPos - kStart, segDir);
-            proj = Mathf.Clamp(proj, 0f, segLen);
-            Vector3 closest = kStart + segDir * proj;
-
-            Vector3 diff = closest - worldPos;
-            diff.y = 0f;
-            float dist = diff.magnitude;
-
-            if (dist < bestDist)
+            // Coarse search: sample 20 points.
+            const int N = 20;
+            for (int i = 0; i <= N; i++)
             {
-                bestDist = dist;
-                insertAfter = k;
+                float t = (float)i / N;
+                float u = 1f - t;
+                Vector3 pt = u * u * u * wp0 + 3f * u * u * t * wp1
+                           + 3f * u * t * t * wp2 + t * t * t * wp3;
+                Vector3 diff = pt - worldPos; diff.y = 0f;
+                float d = diff.sqrMagnitude;
+                if (d < bestDist) { bestDist = d; bestSpan = k; bestT = t; }
             }
         }
 
-        // Compute tangent from adjacent knots.
-        Vector3 prevWorld = xform.TransformPoint((Vector3)spline[insertAfter].Position);
-        Vector3 nextWorld = xform.TransformPoint((Vector3)spline[insertAfter + 1].Position);
-
-        Vector3 tangentDir = (nextWorld - prevWorld).normalized;
-        float distToPrev = Vector3.Distance(worldPos, prevWorld);
-        float distToNext = Vector3.Distance(worldPos, nextWorld);
-        float tangentLen = Mathf.Min(distToPrev, distToNext) / 3f;
-
-        Vector3 tangentIn = -tangentDir * tangentLen;
-        Vector3 tangentOut = tangentDir * tangentLen;
-
-        float3 localPos = (float3)xform.InverseTransformPoint(worldPos);
-        float3 localTanIn = (float3)xform.InverseTransformVector(tangentIn);
-        float3 localTanOut = (float3)xform.InverseTransformVector(tangentOut);
-
-        var knot = new BezierKnot(localPos, localTanIn, localTanOut, quaternion.identity);
-
-        int insertIdx = insertAfter + 1;
-        spline.Insert(insertIdx, knot, TangentMode.Broken);
-
-        // Adjust TangentOut of the previous knot to point toward the new knot.
-        var prevKnot = spline[insertAfter];
-        prevKnot.TangentOut = (float3)xform.InverseTransformVector(tangentDir * (distToPrev / 3f));
-        spline[insertAfter] = prevKnot;
-
-        // Adjust TangentIn of the next knot to point toward the new knot.
-        int nextIdx = insertIdx + 1;
-        if (nextIdx < spline.Count)
+        // Refine with bisection in the winning span.
         {
-            var nextKnot = spline[nextIdx];
-            nextKnot.TangentIn = (float3)xform.InverseTransformVector(-tangentDir * (distToNext / 3f));
-            spline[nextIdx] = nextKnot;
+            float3 lp0 = spline[bestSpan].Position;
+            float3 lp1 = spline[bestSpan].Position + spline[bestSpan].TangentOut;
+            float3 lp2 = spline[bestSpan + 1].Position + spline[bestSpan + 1].TangentIn;
+            float3 lp3 = spline[bestSpan + 1].Position;
+
+            Vector3 wp0 = xform.TransformPoint((Vector3)lp0);
+            Vector3 wp1 = xform.TransformPoint((Vector3)lp1);
+            Vector3 wp2 = xform.TransformPoint((Vector3)lp2);
+            Vector3 wp3 = xform.TransformPoint((Vector3)lp3);
+
+            float lo = Mathf.Max(bestT - 0.05f, 0.001f);
+            float hi = Mathf.Min(bestT + 0.05f, 0.999f);
+            for (int iter = 0; iter < 20; iter++)
+            {
+                float m1 = lo + (hi - lo) / 3f;
+                float m2 = hi - (hi - lo) / 3f;
+                float d1 = BezierDistSqXZ(wp0, wp1, wp2, wp3, m1, worldPos);
+                float d2 = BezierDistSqXZ(wp0, wp1, wp2, wp3, m2, worldPos);
+                if (d1 < d2) hi = m2; else lo = m1;
+            }
+            bestT = (lo + hi) * 0.5f;
         }
 
+        // Clamp to avoid inserting at the very endpoints of the span.
+        bestT = Mathf.Clamp(bestT, 0.01f, 0.99f);
+
+        // ── De Casteljau subdivision at bestT ───────────────────────────
+        // Work in LOCAL space so the resulting knot data is directly usable.
+        float3 P0 = spline[bestSpan].Position;
+        float3 P1 = spline[bestSpan].Position + spline[bestSpan].TangentOut;
+        float3 P2 = spline[bestSpan + 1].Position + spline[bestSpan + 1].TangentIn;
+        float3 P3 = spline[bestSpan + 1].Position;
+
+        float t_ = bestT;
+        // Level 1
+        float3 Q0 = math.lerp(P0, P1, t_);
+        float3 Q1 = math.lerp(P1, P2, t_);
+        float3 Q2 = math.lerp(P2, P3, t_);
+        // Level 2
+        float3 R0 = math.lerp(Q0, Q1, t_);
+        float3 R1 = math.lerp(Q1, Q2, t_);
+        // Level 3 — the exact point on the curve
+        float3 S  = math.lerp(R0, R1, t_);
+
+        // First half:  P0, Q0, R0, S  → knot[bestSpan].TangentOut = Q0 - P0
+        //                                new knot.TangentIn  = R0 - S
+        // Second half: S, R1, Q2, P3  → new knot.TangentOut = R1 - S
+        //                                knot[bestSpan+1].TangentIn = Q2 - P3
+
+        // Update the previous knot's outgoing tangent (shortened to first half).
+        var prevKnot = spline[bestSpan];
+        prevKnot.TangentOut = Q0 - P0;
+        spline[bestSpan] = prevKnot;
+
+        // Build the new split knot.
+        var splitKnot = new BezierKnot(S, R0 - S, R1 - S, quaternion.identity);
+        int insertIdx = bestSpan + 1;
+        spline.Insert(insertIdx, splitKnot, TangentMode.Broken);
+
+        // Update the next knot's incoming tangent (shortened to second half).
+        // After insertion, the original knot[bestSpan+1] is now at insertIdx+1.
+        int nextIdx = insertIdx + 1;
+        var nextKnot = spline[nextIdx];
+        nextKnot.TangentIn = Q2 - P3;
+        spline[nextIdx] = nextKnot;
+
         return insertIdx;
+    }
+
+    /// <summary>
+    /// Squared XZ distance from a point on a cubic Bézier at parameter t to a target.
+    /// </summary>
+    private static float BezierDistSqXZ(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3,
+                                         float t, Vector3 target)
+    {
+        float u = 1f - t;
+        Vector3 pt = u * u * u * p0 + 3f * u * u * t * p1
+                   + 3f * u * t * t * p2 + t * t * t * p3;
+        float dx = pt.x - target.x, dz = pt.z - target.z;
+        return dx * dx + dz * dz;
     }
 
     private static Vector2Int WorldToTile(Vector3 worldPos)
