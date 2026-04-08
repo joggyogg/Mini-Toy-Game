@@ -133,6 +133,7 @@ public class RailDrawingController : MonoBehaviour
     private Mesh starMesh;
     private Mesh sphereMesh;
     private Mesh cylinderMesh;
+    private Mesh crossMesh;
     private Material deleteMat;
     private Material deleteSelectedMat;
     private Material selectMat;
@@ -275,6 +276,7 @@ public class RailDrawingController : MonoBehaviour
         parallelReturnMat = new Material(markerShader);
         parallelReturnMat.color = new Color(1f, 0.95f, 0.4f, 0.95f); // bright gold
         starMesh = BuildStarMesh(5, 0.5f, 0.22f, 0.15f);
+        crossMesh = BuildCrossMesh(0.5f, 0.15f, 0.15f);
         var tempSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         sphereMesh = tempSphere.GetComponent<MeshFilter>().sharedMesh;
         DestroyImmediate(tempSphere);
@@ -301,7 +303,7 @@ public class RailDrawingController : MonoBehaviour
         westMat = new Material(markerShader);
         westMat.color = new Color(0.95f, 0.30f, 0.10f, 0.9f);   // Orange/Red
         switchPathMat = new Material(Shader.Find("Sprites/Default"));
-        switchPathMat.color = new Color(0.1f, 1f, 0.2f, 0.9f);
+        switchPathMat.color = Color.white;
         joinArmMat = new Material(Shader.Find("Sprites/Default"));
         joinArmMat.color = new Color(0.6f, 0.2f, 1f, 0.7f); // purple, semi-transparent
         placeMat = new Material(markerShader);
@@ -500,9 +502,17 @@ public class RailDrawingController : MonoBehaviour
                 bool isSel = (i == selectedDeleteKnot);
                 markerPool[i].GetComponent<Renderer>().sharedMaterial =
                     isSel ? deleteSelectedMat : deleteMat;
-                markerPool[i].transform.localScale = isSel
-                    ? new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f)
-                    : new Vector3(markerRadius, 0.15f, markerRadius);
+
+                bool isJunc = railGraph != null && railGraph.FindNodeAtPosition(deleteKnotRefs[i].worldPos)?.IsJunction == true;
+                var mf = markerPool[i].GetComponent<MeshFilter>();
+                if (mf != null) mf.sharedMesh = isJunc ? crossMesh : cylinderMesh;
+
+                if (isJunc)
+                    markerPool[i].transform.localScale = isSel ? new Vector3(1.3f, 1.3f, 1.3f) : Vector3.one;
+                else
+                    markerPool[i].transform.localScale = isSel
+                        ? new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f)
+                        : new Vector3(markerRadius, 0.15f, markerRadius);
             }
             else
             {
@@ -551,6 +561,18 @@ public class RailDrawingController : MonoBehaviour
             2 => southMat,
             3 => westMat,
             _ => candidateMat
+        };
+    }
+
+    private Color GetCardinalGroupColor(int group)
+    {
+        return group switch
+        {
+            0 => new Color(1.00f, 0.85f, 0.10f, 0.9f),  // Yellow (North)
+            1 => new Color(0.10f, 0.70f, 0.15f, 0.9f),   // Green  (East)
+            2 => new Color(0.10f, 0.50f, 0.85f, 0.9f),   // Blue   (South)
+            3 => new Color(0.95f, 0.30f, 0.10f, 0.9f),   // Orange (West)
+            _ => Color.green
         };
     }
 
@@ -816,9 +838,17 @@ public class RailDrawingController : MonoBehaviour
                 bool isSel = (i == selectedSelectEndpoint);
                 markerPool[i].GetComponent<Renderer>().sharedMaterial =
                     isSel ? selectSelectedMat : selectMat;
-                markerPool[i].transform.localScale = isSel
-                    ? new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f)
-                    : new Vector3(markerRadius, 0.15f, markerRadius);
+
+                bool isJunc = railGraph != null && railGraph.FindNodeAtPosition(selectRefs[i].worldPos)?.IsJunction == true;
+                var mf = markerPool[i].GetComponent<MeshFilter>();
+                if (mf != null) mf.sharedMesh = isJunc ? crossMesh : cylinderMesh;
+
+                if (isJunc)
+                    markerPool[i].transform.localScale = isSel ? new Vector3(1.3f, 1.3f, 1.3f) : Vector3.one;
+                else
+                    markerPool[i].transform.localScale = isSel
+                        ? new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f)
+                        : new Vector3(markerRadius, 0.15f, markerRadius);
             }
             else
             {
@@ -1024,9 +1054,13 @@ public class RailDrawingController : MonoBehaviour
                 bool isSel = (i == selectedSwitchJunction);
                 markerPool[i].GetComponent<Renderer>().sharedMaterial =
                     isSel ? switchActiveMat : switchMat;
+
+                // All switch markers are junctions by definition — use cross mesh.
+                var mf = markerPool[i].GetComponent<MeshFilter>();
+                if (mf != null) mf.sharedMesh = crossMesh;
                 markerPool[i].transform.localScale = isSel
-                    ? new Vector3(markerRadius * 1.5f, 0.25f, markerRadius * 1.5f)
-                    : new Vector3(markerRadius, 0.15f, markerRadius);
+                    ? new Vector3(1.5f, 1.5f, 1.5f)
+                    : Vector3.one;
             }
             else
             {
@@ -1118,9 +1152,12 @@ public class RailDrawingController : MonoBehaviour
 
                 // Draw each active segment as a path line from the junction outward.
                 RailSegment[] segs = { segA, segB };
+                int[] segGroups = { groupA, groupB };
                 for (int s = 0; s < segs.Length; s++)
                 {
                     if (segs[s] == null) continue;
+
+                    Color groupColor = GetCardinalGroupColor(segGroups[s]);
 
                     // Ensure we have enough LineRenderers.
                     while (lineIdx >= switchPathLines.Count)
@@ -1132,8 +1169,6 @@ public class RailDrawingController : MonoBehaviour
                         lr.startWidth = switchPathWidth;
                         lr.endWidth = switchPathWidth;
                         lr.material = switchPathMat;
-                        lr.startColor = Color.green;
-                        lr.endColor = Color.green;
                         lr.positionCount = 0;
                         lr.numCornerVertices = 4;
                         lr.numCapVertices = 4;
@@ -1143,6 +1178,8 @@ public class RailDrawingController : MonoBehaviour
                     LineRenderer line = switchPathLines[lineIdx];
                     line.startWidth = switchPathWidth;
                     line.endWidth = switchPathWidth;
+                    line.startColor = groupColor;
+                    line.endColor = groupColor;
                     lineIdx++;
 
                     int splineIdx = segs[s].splineIndex;
@@ -1355,9 +1392,17 @@ public class RailDrawingController : MonoBehaviour
                 bool isSel = (i == selectedPlaceKnot);
                 markerPool[i].GetComponent<Renderer>().sharedMaterial =
                     isSel ? placeSelectedMat : placeMat;
-                markerPool[i].transform.localScale = isSel
-                    ? new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f)
-                    : new Vector3(markerRadius, 0.15f, markerRadius);
+
+                bool isJunc = railGraph != null && railGraph.FindNodeAtPosition(placeKnotRefs[i].worldPos)?.IsJunction == true;
+                var mf = markerPool[i].GetComponent<MeshFilter>();
+                if (mf != null) mf.sharedMesh = isJunc ? crossMesh : cylinderMesh;
+
+                if (isJunc)
+                    markerPool[i].transform.localScale = isSel ? new Vector3(1.3f, 1.3f, 1.3f) : Vector3.one;
+                else
+                    markerPool[i].transform.localScale = isSel
+                        ? new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f)
+                        : new Vector3(markerRadius, 0.15f, markerRadius);
             }
             else
             {
@@ -3331,16 +3376,22 @@ public class RailDrawingController : MonoBehaviour
                 else if (isJuncMirror) mat = parallelReturnMat;
                 else if (isContinueArc) mat = parallelReturnMat;
 
+                // Junction cross: if this candidate joins an existing junction node, use cross mesh.
+                bool isJuncTarget = isJoin && candidates[i].joinNode != null && candidates[i].joinNode.IsJunction;
+
                 markerPool[i].GetComponent<Renderer>().sharedMaterial = mat;
                 var mf = markerPool[i].GetComponent<MeshFilter>();
                 Mesh meshToUse = cylinderMesh;
-                if (isStraighten) meshToUse = starMesh;
+                if (isJuncTarget) meshToUse = crossMesh;
+                else if (isStraighten) meshToUse = starMesh;
                 else if (isJuncMirror) meshToUse = starMesh;
                 else if (isContinueArc) meshToUse = sphereMesh;
                 if (mf != null) mf.sharedMesh = meshToUse;
 
                 Vector3 scale;
-                if (isStraighten || isJuncMirror)
+                if (isJuncTarget)
+                    scale = isSel ? new Vector3(1.3f, 1.3f, 1.3f) : Vector3.one;
+                else if (isStraighten || isJuncMirror)
                     scale = new Vector3(1f, 1f, 1f);
                 else if (isContinueArc)
                     scale = new Vector3(markerRadius * 1.8f, markerRadius * 1.8f, markerRadius * 1.8f);
@@ -3435,9 +3486,17 @@ public class RailDrawingController : MonoBehaviour
                 bool isSel = (i == nearest);
                 markerPool[i].GetComponent<Renderer>().sharedMaterial =
                     isSel ? selectedMat : joinMat;
-                markerPool[i].transform.localScale = isSel
-                    ? new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f)
-                    : new Vector3(markerRadius, 0.15f, markerRadius);
+
+                bool isJunc = railGraph.FindNodeAtPosition(joinableNodeRefs[i])?.IsJunction == true;
+                var mf = markerPool[i].GetComponent<MeshFilter>();
+                if (mf != null) mf.sharedMesh = isJunc ? crossMesh : cylinderMesh;
+
+                if (isJunc)
+                    markerPool[i].transform.localScale = isSel ? new Vector3(1.3f, 1.3f, 1.3f) : Vector3.one;
+                else
+                    markerPool[i].transform.localScale = isSel
+                        ? new Vector3(markerRadius * 1.3f, 0.2f, markerRadius * 1.3f)
+                        : new Vector3(markerRadius, 0.15f, markerRadius);
             }
             else
             {
@@ -3598,6 +3657,85 @@ public class RailDrawingController : MonoBehaviour
 
         var mesh = new Mesh();
         mesh.name = "StarMarker";
+        mesh.SetVertices(vertices);
+        mesh.SetTriangles(triangles, 0);
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+        return mesh;
+    }
+
+    /// <summary>
+    /// Procedurally generates a flat plus/cross mesh (XZ plane) with two perpendicular
+    /// arms defined by armLength (half-length of each arm) and armWidth (half-width).
+    /// </summary>
+    private static Mesh BuildCrossMesh(float armLength, float armWidth, float height)
+    {
+        float halfH = height * 0.5f;
+        // 12-vertex plus outline (clockwise from top-right in XZ).
+        var outline = new Vector3[]
+        {
+            new( armWidth, 0,  armLength),
+            new( armWidth, 0,  armWidth),
+            new( armLength, 0,  armWidth),
+            new( armLength, 0, -armWidth),
+            new( armWidth, 0, -armWidth),
+            new( armWidth, 0, -armLength),
+            new(-armWidth, 0, -armLength),
+            new(-armWidth, 0, -armWidth),
+            new(-armLength, 0, -armWidth),
+            new(-armLength, 0,  armWidth),
+            new(-armWidth, 0,  armWidth),
+            new(-armWidth, 0,  armLength),
+        };
+
+        int count = outline.Length;
+        var topVerts = new Vector3[count];
+        var botVerts = new Vector3[count];
+        for (int i = 0; i < count; i++)
+        {
+            topVerts[i] = new Vector3(outline[i].x,  halfH, outline[i].z);
+            botVerts[i] = new Vector3(outline[i].x, -halfH, outline[i].z);
+        }
+
+        var vertices = new List<Vector3>();
+        var triangles = new List<int>();
+
+        // Top cap fan.
+        int tCenter = vertices.Count;
+        vertices.Add(new Vector3(0, halfH, 0));
+        for (int i = 0; i < count; i++) vertices.Add(topVerts[i]);
+        for (int i = 0; i < count; i++)
+        {
+            triangles.Add(tCenter);
+            triangles.Add(tCenter + 1 + i);
+            triangles.Add(tCenter + 1 + (i + 1) % count);
+        }
+
+        // Bottom cap fan.
+        int bCenter = vertices.Count;
+        vertices.Add(new Vector3(0, -halfH, 0));
+        for (int i = 0; i < count; i++) vertices.Add(botVerts[i]);
+        for (int i = 0; i < count; i++)
+        {
+            triangles.Add(bCenter);
+            triangles.Add(bCenter + 1 + (i + 1) % count);
+            triangles.Add(bCenter + 1 + i);
+        }
+
+        // Side quads.
+        for (int i = 0; i < count; i++)
+        {
+            int next = (i + 1) % count;
+            int a = vertices.Count; vertices.Add(topVerts[i]);
+            int b = vertices.Count; vertices.Add(topVerts[next]);
+            int c = vertices.Count; vertices.Add(botVerts[next]);
+            int d = vertices.Count; vertices.Add(botVerts[i]);
+            triangles.Add(a); triangles.Add(b); triangles.Add(c);
+            triangles.Add(a); triangles.Add(c); triangles.Add(d);
+        }
+
+        var mesh = new Mesh();
+        mesh.name = "CrossMarker";
         mesh.SetVertices(vertices);
         mesh.SetTriangles(triangles, 0);
         mesh.RecalculateNormals();
