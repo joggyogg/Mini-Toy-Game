@@ -294,25 +294,22 @@ public class TerrainGridAuthoringWindow : EditorWindow
         // ── Generate / Clear ─────────────────────────────────────────────
         if (GUILayout.Button("Generate Terrain"))
         {
-            RecordChange("Generate WFC Terrain");
             targetAuthoring.WfcConfig = cfg;
             TerrainWFCGenerator.Generate(targetAuthoring, cfg, childTerrains, targetAuthoring.GradientLines);
-            MarkDirty();
+            MarkDirtyNoUndo();
         }
         if (GUILayout.Button("Randomise Seed & Generate"))
         {
             cfg.seed = Random.Range(0, 99999);
             changed = true;
-            RecordChange("Generate WFC Terrain (Random)");
             targetAuthoring.WfcConfig = cfg;
             TerrainWFCGenerator.Generate(targetAuthoring, cfg, childTerrains, targetAuthoring.GradientLines);
-            MarkDirty();
+            MarkDirtyNoUndo();
         }
         if (GUILayout.Button("Clear Terrain"))
         {
-            RecordChange("Clear WFC Terrain");
             TerrainWFCGenerator.Clear(targetAuthoring, childTerrains);
-            MarkDirty();
+            MarkDirtyNoUndo();
         }
 
         // Write back if any field changed
@@ -1195,6 +1192,21 @@ public class TerrainGridAuthoringWindow : EditorWindow
     private void MarkDirty()
     {
         targetAuthoring.EnsureValidData();
+        EditorUtility.SetDirty(targetAuthoring);
+        _textureDirty = true;
+        Repaint();
+    }
+
+    /// <summary>
+    /// Marks the target dirty for scene-saving without recording an undo snapshot.
+    /// Used for bulk operations (Generate / Clear) where the massive serialized arrays
+    /// (enabledCells, cornerHeights, paintLockedTiles) make Undo.RecordObject extremely
+    /// slow. These operations are deterministic and easily re-done, so undo is not needed.
+    /// </summary>
+    private void MarkDirtyNoUndo()
+    {
+        targetAuthoring.EnsureValidData();
+        Undo.ClearUndo(targetAuthoring);
         EditorUtility.SetDirty(targetAuthoring);
         _textureDirty = true;
         Repaint();

@@ -156,6 +156,11 @@ public class RailTerrainGrader : MonoBehaviour
         {
             if (t != null) terrainGrid.ApplyToTerrainPartial(t, dirtyTiles);
         }
+
+        var splatMapper = terrainGrid.GetComponent<TerrainSplatMapper>();
+        if (splatMapper != null)
+            foreach (Terrain t in childTerrains)
+                if (t != null) splatMapper.PaintSplatmapsPartial(t, dirtyTiles, terrainGrid);
     }
 
     /// <summary>
@@ -221,6 +226,11 @@ public class RailTerrainGrader : MonoBehaviour
         {
             if (t != null) terrainGrid.ApplyToTerrainPartial(t, dirtyTiles);
         }
+
+        var splatMapper2 = terrainGrid.GetComponent<TerrainSplatMapper>();
+        if (splatMapper2 != null)
+            foreach (Terrain t in childTerrains)
+                if (t != null) splatMapper2.PaintSplatmapsPartial(t, dirtyTiles, terrainGrid);
     }
 
     /// <summary>

@@ -15,6 +15,10 @@ public class TerrainGridAuthoringEditor : Editor
     private SerializedProperty gizmoPerformanceModeProperty;
     private SerializedProperty cullOffscreenGizmosProperty;
 
+    private int cachedEnabledCells = -1;
+    private int cachedWalkableTiles = -1;
+    private bool statsDirty = true;
+
     private void OnEnable()
     {
         femaleTileSizeProperty = serializedObject.FindProperty("femaleTileSize");
@@ -22,6 +26,7 @@ public class TerrainGridAuthoringEditor : Editor
         drawGridGizmosProperty = serializedObject.FindProperty("drawGridGizmos");
         gizmoPerformanceModeProperty = serializedObject.FindProperty("gizmoPerformanceMode");
         cullOffscreenGizmosProperty = serializedObject.FindProperty("cullOffscreenGizmos");
+        statsDirty = true;
     }
 
     public override void OnInspectorGUI()
@@ -49,13 +54,18 @@ public class TerrainGridAuthoringEditor : Editor
 
         Vector2Int cellSize = authoring.GridSizeInCells;
         int totalCells = cellSize.x * cellSize.y;
-        int enabledCells = authoring.GetEnabledCellCount();
-        EditorGUILayout.LabelField("Enabled Subtile Cells", $"{enabledCells} / {totalCells}");
-
         Vector2Int fullSize = authoring.FullTileGridSize;
         int totalFull = fullSize.x * fullSize.y;
-        int walkable = authoring.GetWalkableFullTileCount();
-        EditorGUILayout.LabelField("Walkable Full Tiles", $"{walkable} / {totalFull}");
+
+        if (statsDirty)
+        {
+            cachedEnabledCells = authoring.GetEnabledCellCount();
+            cachedWalkableTiles = authoring.GetWalkableFullTileCount();
+            statsDirty = false;
+        }
+
+        EditorGUILayout.LabelField("Enabled Subtile Cells", $"{cachedEnabledCells} / {totalCells}");
+        EditorGUILayout.LabelField("Walkable Full Tiles", $"{cachedWalkableTiles} / {totalFull}");
 
         EditorGUILayout.Space(8);
 
@@ -72,6 +82,7 @@ public class TerrainGridAuthoringEditor : Editor
             authoring.RecalculateFromColliders();
             authoring.EnsureValidData();
             EditorUtility.SetDirty(authoring);
+            statsDirty = true;
         }
 
         EditorGUILayout.BeginHorizontal();
@@ -80,12 +91,14 @@ public class TerrainGridAuthoringEditor : Editor
             Undo.RecordObject(authoring, "Fill Terrain Grid");
             authoring.FillAll(true);
             EditorUtility.SetDirty(authoring);
+            statsDirty = true;
         }
         if (GUILayout.Button("Clear All"))
         {
             Undo.RecordObject(authoring, "Clear Terrain Grid");
             authoring.FillAll(false);
             EditorUtility.SetDirty(authoring);
+            statsDirty = true;
         }
         EditorGUILayout.EndHorizontal();
 

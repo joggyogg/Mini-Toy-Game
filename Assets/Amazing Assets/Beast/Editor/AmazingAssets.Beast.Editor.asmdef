@@ -1,0 +1,18 @@
+{
+    "name": "AmazingAssets.Beast.Editor",
+    "rootNamespace": "",
+    "references": [
+        "GUID:907676a1f2712e44196113c5c8328d40"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

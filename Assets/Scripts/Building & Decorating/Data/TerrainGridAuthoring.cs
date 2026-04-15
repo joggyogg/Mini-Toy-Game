@@ -484,6 +484,7 @@ public class TerrainGridAuthoring : MonoBehaviour, ISupportSurface
     public bool GizmoPerformanceMode => gizmoPerformanceMode;
     public bool CullOffscreenGizmos => cullOffscreenGizmos;
     public Vector3 GridOriginLocalOffset => gridOriginLocalOffset;
+    public float FullTileWorldSizeValue => FullTileWorldSize;
 
     public int GetEnabledCellCount()
     {

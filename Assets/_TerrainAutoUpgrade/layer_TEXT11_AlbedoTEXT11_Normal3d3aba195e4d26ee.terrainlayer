@@ -9,7 +9,7 @@ TerrainLayer:
   m_Name: layer_TEXT11_AlbedoTEXT11_Normal3d3aba195e4d26ee
   m_DiffuseTexture: {fileID: 2800000, guid: a5c3894e9f4f77a478fc3d475eefbd68, type: 3}
   m_NormalMapTexture: {fileID: 2800000, guid: 306f27ad25b7c56469a14ebd774d0c7f, type: 3}
-  m_MaskMapTexture: {fileID: 0}
+  m_MaskMapTexture: {fileID: 2800000, guid: db5c7f5995df64440a050e297f03d91b, type: 3}
   m_TileSize: {x: 15, y: 15}
   m_TileOffset: {x: 0, y: 0}
   m_Specular: {r: 0, g: 0, b: 0, a: 0}

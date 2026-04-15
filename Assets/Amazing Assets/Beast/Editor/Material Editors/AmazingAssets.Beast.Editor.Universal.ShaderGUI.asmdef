@@ -1,0 +1,22 @@
+{
+    "name": "AmazingAssets.Beast.Editor.Universal.ShaderGUI",
+    "rootNamespace": "",
+    "references": [
+        "GUID:907676a1f2712e44196113c5c8328d40",
+        "GUID:323626d83821dc84289aba4281b7bf1d",
+        "GUID:c579267770062bf448e75eb160330b7f",
+        "GUID:3eae0364be2026648bf74846acb8a731",
+        "GUID:df380645f10b7bc4b97d4f5eb6303d95"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
